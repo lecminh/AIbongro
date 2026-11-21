@@ -7,10 +7,11 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 import cv2
+import json
 import numpy as np
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Union
 from dataclasses import dataclass
-from flask import Flask, Response
+from flask import Flask, Response, request, jsonify
 from ultralytics import YOLO
 from pydantic import BaseModel, Field
 from google import genai
@@ -23,6 +24,10 @@ from google.genai import types
 class RosterScanResult(BaseModel):
     team_a_numbers: List[int] = Field(description="Danh sách các số áo cầu thủ Đội A nhìn thấy được trên sân (không trùng lặp)")
     team_b_numbers: List[int] = Field(description="Danh sách các số áo cầu thủ Đội B nhìn thấy được trên sân (không trùng lặp)")
+    court_polygon: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Tọa độ 4 góc ranh giới mặt sân thi đấu theo vạch biên [x, y] tỷ lệ từ 0.0 đến 1.0 (thứ tự: Top-Left, Top-Right, Bottom-Right, Bottom-Left)"
+    )
 
 EventType = Literal[
     "2PT_MADE", "2PT_MISSED",
@@ -367,6 +372,77 @@ class AsyncOBSReader:
         self.cap.release()
 
 
+class CourtBoundaryManager:
+    """Quản lý và căn chỉnh ranh giới vạch biên sân thi đấu (Court Boundary).
+    Tự động lưu/tải từ court_config.json, hỗ trợ AI quét vạch và căn chỉnh kéo thả trên web."""
+    def __init__(self, match_format: str = "3x3", config_path: str = "court_config.json"):
+        self.config_path = config_path
+        self.match_format = match_format
+        self.lock = threading.Lock()
+
+        # Tọa độ tỷ lệ mặc định theo phối cảnh góc máy truyền hình thực tế:
+        if "3" in match_format:
+            # 3x3: Nửa sân góc xiên, loại trừ hàng ghế dự bị bên trái và khu vực cameraman góc dưới
+            self.polygon = [
+                (0.28, 0.32),  # Top-Left: góc trên-trái baseline (trong vạch biên, ngoài ghế dự bị)
+                (0.88, 0.30),  # Top-Right: góc trên-phải baseline
+                (0.84, 0.90),  # Bottom-Right: góc dưới-phải (trên cameraman)
+                (0.10, 0.90),  # Bottom-Left: góc dưới-trái (dưới ghế dự bị)
+            ]
+        else:
+            # 5x5: Toàn sân
+            self.polygon = [
+                (0.08, 0.22),
+                (0.92, 0.22),
+                (0.96, 0.92),
+                (0.04, 0.92),
+            ]
+        self.load_from_file()
+
+    def load_from_file(self) -> bool:
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if "polygon" in data and len(data["polygon"]) >= 4:
+                        self.polygon = [(float(p[0]), float(p[1])) for p in data["polygon"][:4]]
+                        print(f"[Court Boundary] Đã tải ranh giới vạch sân từ {self.config_path}")
+                        return True
+            except Exception as e:
+                print(f"[Court Boundary] Lỗi đọc {self.config_path}: {e}")
+        return False
+
+    def save_to_file(self):
+        try:
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "match_format": self.match_format,
+                    "polygon": self.polygon,
+                    "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                }, f, indent=2)
+            print(f"[Court Boundary] Đã lưu ranh giới vạch sân vào {self.config_path}")
+        except Exception as e:
+            print(f"[Court Boundary] Lỗi lưu {self.config_path}: {e}")
+
+    def set_polygon(self, pts: List[Union[List[float], tuple]]):
+        with self.lock:
+            self.polygon = [
+                (max(0.0, min(1.0, float(p[0]))), max(0.0, min(1.0, float(p[1]))))
+                for p in pts[:4]
+            ]
+            self.save_to_file()
+
+    def get_pixel_polygon(self, width: int, height: int) -> np.ndarray:
+        with self.lock:
+            return np.array([
+                [int(px * width), int(py * height)] for px, py in self.polygon
+            ], dtype=np.int32)
+
+    def is_in_court(self, foot_x: float, foot_y: float, width: int, height: int) -> bool:
+        poly_pts = self.get_pixel_polygon(width, height)
+        return cv2.pointPolygonTest(poly_pts, (float(foot_x), float(foot_y)), False) >= 0
+
+
 class OBSVisionSystem:
     def __init__(self, obs_reader: AsyncOBSReader, engine: FIBABoxScoreEngine, gemini_mgr: GeminiFailoverManager):
         self.obs = obs_reader
@@ -385,22 +461,24 @@ class OBSVisionSystem:
         self.gemini_status = "Đang theo dõi luồng OBS..."
         self.ball_trail = deque(maxlen=12)
 
-        # Đa giác ranh giới sân đấu (Court ROI) theo tọa độ tỷ lệ (x_ratio, y_ratio: 0.0 -> 1.0)
-        # Giúp tự động loại trừ quay phim ngồi bệt ở góc, khán giả, HLV và VĐV dự bị đứng ngoài biên
-        self.court_roi_polygon = [
-            (0.04, 0.20),  # Top-left (góc trên bên trái đường biên)
-            (0.96, 0.20),  # Top-right (góc trên bên phải đường biên)
-            (0.98, 0.93),  # Bottom-right (góc dưới bên phải)
-            (0.02, 0.93),  # Bottom-left (góc dưới bên trái)
-        ]
+        # Trình quản lý ranh giới vạch sân thi đấu (Court Boundary Tracker)
+        self.court_mgr = CourtBoundaryManager(match_format=self.engine.match_format)
         self.use_court_roi = True
 
         print("[YOLO] Đang khởi tạo mô hình nhận diện Hitbox cầu thủ (yolov8n.pt)...")
         self.yolo_model = YOLO("yolov8n.pt")
 
+    @property
+    def court_roi_polygon(self):
+        return self.court_mgr.polygon
+
+    @court_roi_polygon.setter
+    def court_roi_polygon(self, val):
+        self.court_mgr.set_polygon(val)
+
     def scan_jerseys_pre_match(self) -> tuple[List[int], List[int]]:
-        """Chụp 3 khung hình HD từ luồng OBS gửi lên Gemini để đọc số áo trước trận"""
-        print("\n[AI SCAN] Đang chụp 3 khung hình HD từ OBS (trong 1.5 giây) để đọc số áo...")
+        """Chụp 3 khung hình HD từ luồng OBS gửi lên Gemini để đọc số áo & quét vạch biên sân"""
+        print("\n[AI SCAN] Đang chụp 3 khung hình HD từ OBS (trong 1.5 giây) để đọc số áo & quét vạch sân...")
         jpeg_list = []
         for _ in range(3):
             frame = self.obs.get_frame((1280, 720))
@@ -416,20 +494,26 @@ class OBSVisionSystem:
 
         prompt = f"""
         Đây là các khung hình chụp trực tiếp từ luồng OBS ghi hình trận bóng rổ thể thức {fmt} (Bóng rổ {fmt}).
-        Hãy quan sát kỹ áo thi đấu của các cầu thủ trên sân để đọc SỐ ÁO của từng đội:
-        - Đội A ({t1['name']} - {c1}): mặc áo màu {t1['color']}.
-        - Đội B ({t2['name']} - {c2}): mặc áo màu {t2['color']}.
-
-        QUY TẮC PHÂN LOẠI & LOẠI TRỪ BẮT BUỘC:
-        1. BỎ QUA TRỌNG TÀI: Người mặc áo xám FIBA hoặc sọc đen-trắng, quần dài thể thao màu đen, đeo còi trước ngực. TUYỆT ĐỐI KHÔNG coi trọng tài là cầu thủ.
-        2. BỎ QUA NGƯỜI NGOÀI SÂN: Huấn luyện viên, cầu thủ dự bị ngồi ngoài biên, nhân viên quay phim, ban tổ chức và khán giả.
-        3. CHỈ đọc số áo của các vận động viên đang đứng/khởi động/thi đấu trên sân thi đấu mang đúng màu áo của 2 đội trên.
-        Mỗi đội tối đa {max_p + 1} số áo (cho 3x3) hoặc 12 số áo (cho 5x5). Trả về danh sách số nguyên không trùng lặp.
+        Hãy quan sát kỹ áo thi đấu của các cầu thủ trên sân và các đường vạch biên sân thi đấu:
+        1. Đọc SỐ ÁO của từng đội:
+           - Đội A ({t1['name']} - {c1}): mặc áo màu {t1['color']}.
+           - Đội B ({t2['name']} - {c2}): mặc áo màu {t2['color']}.
+           QUY TẮC LOẠI TRỪ: BỎ QUA trọng tài (áo xám/sọc đen trắng, quần đen, đeo còi), khán giả, HLV, quay phim và cầu thủ dự bị ngồi ngoài biên.
+           Mỗi đội tối đa {max_p + 1} số áo (cho 3x3) hoặc 12 số áo (cho 5x5).
+        2. QUÉT RANH GIỚI VẠCH BIÊN SÂN THI ĐẤU (court_polygon):
+           Xác định 4 điểm góc [x, y] (tỷ lệ 0.0 đến 1.0) bám sát các vạch biên trắng/vàng trên mặt sân thi đấu thực tế:
+           - Điểm 1 (Top-Left): Góc trên bên trái baseline (loại bỏ khu vực ghế ngồi ngoài biên của VĐV dự bị).
+           - Điểm 2 (Top-Right): Góc trên bên phải baseline.
+           - Điểm 3 (Bottom-Right): Góc dưới bên phải (loại bỏ khu vực cameraman ngồi bệt).
+           - Điểm 4 (Bottom-Left): Góc dưới bên trái.
         """
         try:
-            print(f"[AI SCAN] Đang phân tích số áo bằng {self.gemini.active_label}...")
+            print(f"[AI SCAN] Đang phân tích số áo & quét vạch sân bằng {self.gemini.active_label}...")
             res = self.gemini.analyze_images_roster(jpeg_list, prompt)
             if res:
+                if res.court_polygon and len(res.court_polygon) >= 4:
+                    self.court_mgr.set_polygon(res.court_polygon)
+                    print(f"[AI SCAN] Đã tự động căn chỉnh vạch sân OBS: {self.court_mgr.polygon}")
                 return sorted(list(set(res.team_a_numbers))), sorted(list(set(res.team_b_numbers)))
         except Exception as e:
             print(f"[Lỗi AI Scan] Không thể quét số áo (cả 2 API đều lỗi): {e}")
@@ -445,13 +529,16 @@ class OBSVisionSystem:
         ball_data = None
 
         h, w = frame.shape[:2]
-        court_poly_pts = np.array([
-            [int(px * w), int(py * h)] for px, py in self.court_roi_polygon
-        ], dtype=np.int32)
+        court_poly_pts = self.court_mgr.get_pixel_polygon(w, h)
 
-        # Vẽ viền ranh giới sân tinh tế (mờ nhẹ để người xem nhận biết vùng thi đấu hợp lệ)
+        # Vẽ viền ranh giới sân thực tế theo phối cảnh (cyan viền sắc nét)
         if self.use_court_roi:
-            cv2.polylines(frame, [court_poly_pts], isClosed=True, color=(60, 140, 90), thickness=1, lineType=cv2.LINE_AA)
+            cv2.polylines(frame, [court_poly_pts], isClosed=True, color=(0, 220, 255), thickness=2, lineType=cv2.LINE_AA)
+            corner_labels = ["TL", "TR", "BR", "BL"]
+            for idx, (px, py) in enumerate(court_poly_pts):
+                cv2.circle(frame, (int(px), int(py)), 5, (0, 255, 255), -1)
+                cv2.putText(frame, corner_labels[idx], (int(px) + 5, int(py) - 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 240, 255), 1)
 
         if results and len(results) > 0 and results[0].boxes is not None:
             for box in results[0].boxes:
@@ -462,10 +549,11 @@ class OBSVisionSystem:
 
                 if cls_id == 0 and conf >= 0.35:
                     # Kiểm tra vị trí bàn chân ((x1+x2)//2, y2) có nằm trong ranh giới sân không
-                    foot_pt = (float((x1 + x2) // 2), float(y2))
+                    foot_x = (x1 + x2) // 2
+                    foot_y = y2
                     is_in_court = True
                     if self.use_court_roi:
-                        is_in_court = cv2.pointPolygonTest(court_poly_pts, foot_pt, False) >= 0
+                        is_in_court = self.court_mgr.is_in_court(foot_x, foot_y, w, h)
 
                     if is_in_court:
                         player_count += 1
@@ -1344,20 +1432,38 @@ def index():
                     </div>
                     <div class="cam-badges">
                         <span class="badge badge-yolo">YOLOv8 TRACKING</span>
-                        <span class="badge badge-ai">GEMINI 3.1 FLASH-LITE</span>
+                        <span class="badge badge-ai">COURT ROI ACTIVE</span>
                     </div>
                 </div>
-                <div class="obs-feed-container">
-                    <img src="/video_feed" alt="Đang kết nối luồng OBS Studio..." />
+                <div class="obs-feed-container" id="feedContainer" style="position: relative; user-select: none;">
+                    <img id="obsFeedImg" src="/video_feed" alt="Đang kết nối luồng OBS Studio..." style="width: 100%; display: block;" />
+                    <canvas id="courtCanvas" style="position: absolute; top:0; left:0; width:100%; height:100%; display: none; cursor: crosshair;"></canvas>
                 </div>
                 <div class="cam-footer">
                     <div class="sync-indicator">
                         <span class="pulse-dot"></span> Tự động đồng bộ số liệu mỗi 2s
                     </div>
-                    <button class="btn-print" onclick="window.print()">
-                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                        In / Xuất PDF Biên Bản FIBA
-                    </button>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="btnCalibToggle" onclick="toggleCourtCalib()" style="background: #1e293b; color: #38bdf8; border: 1px solid #0284c7; padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px;">
+                            📐 Căn chỉnh vạch sân
+                        </button>
+                        <button class="btn-print" onclick="window.print()">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                            In / Xuất PDF Biên Bản FIBA
+                        </button>
+                    </div>
+                </div>
+                <div id="calibPanel" style="display: none; background: #0f172a; border-top: 1px solid #1e293b; padding: 12px 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <span style="font-weight: 600; color: #38bdf8; font-size: 13px;">Kéo 4 chốt góc trên video để bám sát vạch biên sân thi đấu (Sidelines & Baseline)</span>
+                        <span id="calibStatus" style="font-size: 12px; color: #4ade80;"></span>
+                    </div>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button onclick="saveCourtPoly()" style="background: #0284c7; color: white; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">💾 Lưu ranh giới sân</button>
+                        <button onclick="setCourtPreset('3x3')" style="background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">Góc chuẩn 3x3</button>
+                        <button onclick="setCourtPreset('5x5')" style="background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">Góc chuẩn 5x5</button>
+                        <button onclick="toggleCourtCalib()" style="background: transparent; color: #94a3b8; border: 1px solid #475569; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-left: auto;">✕ Đóng</button>
+                    </div>
                 </div>
             </div>
 
@@ -1373,6 +1479,157 @@ def index():
             }
             setInterval(refreshBoxScore, 2000);
             refreshBoxScore();
+
+            // QUẢN LÝ CĂN CHỈNH VẠCH SÂN TƯƠNG TÁC
+            let calibActive = false;
+            let courtPoints = [
+                [0.28, 0.32],
+                [0.88, 0.30],
+                [0.84, 0.90],
+                [0.10, 0.90]
+            ];
+            const pointColors = ['#ef4444', '#3b82f6', '#eab308', '#22c55e'];
+            const pointLabels = ['TL (Baseline L)', 'TR (Baseline R)', 'BR (Court R)', 'BL (Court L)'];
+            let activeDragIdx = -1;
+
+            function fetchCourtPolygon() {
+                fetch('/api/get_court_polygon').then(r => r.json()).then(data => {
+                    if (data.polygon && data.polygon.length >= 4) {
+                        courtPoints = data.polygon;
+                        drawCalibCanvas();
+                    }
+                }).catch(e => console.error(e));
+            }
+
+            function toggleCourtCalib() {
+                calibActive = !calibActive;
+                const canvas = document.getElementById('courtCanvas');
+                const panel = document.getElementById('calibPanel');
+                const btn = document.getElementById('btnCalibToggle');
+                if (calibActive) {
+                    canvas.style.display = 'block';
+                    panel.style.display = 'block';
+                    btn.style.background = '#0284c7';
+                    btn.style.color = '#ffffff';
+                    fetchCourtPolygon();
+                    initCanvasEvents();
+                } else {
+                    canvas.style.display = 'none';
+                    panel.style.display = 'none';
+                    btn.style.background = '#1e293b';
+                    btn.style.color = '#38bdf8';
+                }
+            }
+
+            function drawCalibCanvas() {
+                const canvas = document.getElementById('courtCanvas');
+                if (!canvas || !calibActive) return;
+                const rect = canvas.getBoundingClientRect();
+                canvas.width = rect.width;
+                canvas.height = rect.height;
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Vẽ đa giác ranh giới sân
+                ctx.beginPath();
+                courtPoints.forEach((p, i) => {
+                    const x = p[0] * canvas.width;
+                    const y = p[1] * canvas.height;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(2, 132, 199, 0.18)';
+                ctx.fill();
+                ctx.strokeStyle = '#00e5ff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Vẽ 4 chốt điều khiển
+                courtPoints.forEach((p, i) => {
+                    const x = p[0] * canvas.width;
+                    const y = p[1] * canvas.height;
+                    ctx.beginPath();
+                    ctx.arc(x, y, 9, 0, Math.PI * 2);
+                    ctx.fillStyle = pointColors[i];
+                    ctx.fill();
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = 'bold 11px sans-serif';
+                    ctx.fillText(pointLabels[i], x + 12, y + 4);
+                });
+            }
+
+            function initCanvasEvents() {
+                const canvas = document.getElementById('courtCanvas');
+                if (!canvas || canvas.dataset.hasEvents) return;
+                canvas.dataset.hasEvents = 'true';
+
+                canvas.addEventListener('mousedown', e => {
+                    const rect = canvas.getBoundingClientRect();
+                    const mx = (e.clientX - rect.left) / rect.width;
+                    const my = (e.clientY - rect.top) / rect.height;
+                    let closestIdx = -1;
+                    let minDist = 0.08;
+                    courtPoints.forEach((p, i) => {
+                        const d = Math.hypot(p[0] - mx, p[1] - my);
+                        if (d < minDist) {
+                            minDist = d;
+                            closestIdx = i;
+                        }
+                    });
+                    activeDragIdx = closestIdx;
+                });
+
+                window.addEventListener('mousemove', e => {
+                    if (!calibActive || activeDragIdx === -1) return;
+                    const canvas = document.getElementById('courtCanvas');
+                    const rect = canvas.getBoundingClientRect();
+                    const mx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                    const my = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+                    courtPoints[activeDragIdx] = [mx, my];
+                    drawCalibCanvas();
+                });
+
+                window.addEventListener('mouseup', () => {
+                    if (activeDragIdx !== -1) {
+                        activeDragIdx = -1;
+                        saveCourtPoly();
+                    }
+                });
+
+                window.addEventListener('resize', () => {
+                    if (calibActive) drawCalibCanvas();
+                });
+            }
+
+            function saveCourtPoly() {
+                const status = document.getElementById('calibStatus');
+                status.innerText = 'Đang lưu...';
+                fetch('/api/set_court_polygon', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({polygon: courtPoints})
+                }).then(r => r.json()).then(data => {
+                    status.innerText = '✓ Đã cập nhật ranh giới vạch sân!';
+                    setTimeout(() => { if (status) status.innerText = ''; }, 3000);
+                }).catch(e => {
+                    status.innerText = 'Lỗi lưu: ' + e;
+                });
+            }
+
+            function setCourtPreset(preset) {
+                if (preset === '3x3') {
+                    courtPoints = [[0.28, 0.32], [0.88, 0.30], [0.84, 0.90], [0.10, 0.90]];
+                } else {
+                    courtPoints = [[0.08, 0.22], [0.92, 0.22], [0.96, 0.92], [0.04, 0.92]];
+                }
+                drawCalibCanvas();
+                saveCourtPoly();
+            }
         </script>
     </body>
     </html>
@@ -1391,6 +1648,21 @@ def video_feed():
 @app.route("/boxscore_data")
 def boxscore_data():
     return generate_boxscore_tables_html(boxscore_engine) if boxscore_engine else ""
+
+@app.route("/api/get_court_polygon")
+def get_court_polygon():
+    if vision_system and vision_system.court_mgr:
+        return jsonify({"polygon": vision_system.court_mgr.polygon})
+    return jsonify({"polygon": []})
+
+@app.route("/api/set_court_polygon", methods=["POST"])
+def set_court_polygon():
+    data = request.get_json(silent=True) or {}
+    poly = data.get("polygon")
+    if vision_system and vision_system.court_mgr and poly and len(poly) >= 4:
+        vision_system.court_mgr.set_polygon(poly)
+        return jsonify({"status": "ok", "polygon": vision_system.court_mgr.polygon})
+    return jsonify({"status": "error", "message": "Invalid polygon"}), 400
 
 
 # =====================================================================
