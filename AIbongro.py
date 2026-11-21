@@ -157,7 +157,10 @@ class PlayerStats:
 
 class FIBABoxScoreEngine:
     def __init__(self, team_a_code: str, team_a_name: str, team_a_color: str,
-                 team_b_code: str, team_b_name: str, team_b_color: str):
+                 team_b_code: str, team_b_name: str, team_b_color: str,
+                 match_format: str = "5x5"):
+        self.match_format = match_format
+        self.max_on_court = 3 if "3" in match_format else 5
         self.lock = threading.Lock()
         self.teams = {
             team_a_code: {"name": team_a_name, "color": team_a_color, "players": {}, "score": 0},
@@ -189,7 +192,10 @@ class FIBABoxScoreEngine:
         lines = []
         for code in self.team_codes:
             t = self.teams[code]
-            p_list = ", ".join([f"#{no} ({p.name})" for no, p in sorted(t["players"].items())])
+            if t["players"]:
+                p_list = ", ".join([f"#{no} ({p.name})" for no, p in sorted(t["players"].items())])
+            else:
+                p_list = "Chưa có danh sách đăng ký cụ thể"
             lines.append(f"- Đội {code} ({t['name']} - Màu áo: {t['color']}): {p_list}")
         return "\n".join(lines)
 
@@ -203,10 +209,25 @@ class FIBABoxScoreEngine:
         with self.lock:
             for code, active in ((self.team_codes[0], active_a), (self.team_codes[1], active_b)):
                 if active:  # Gemini không thấy ai thì giữ đội hình cũ
+                    team_players = self.teams[code]["players"]
+                    has_registered_roster = len(team_players) >= self.max_on_court
+
+                    valid_active = []
                     for no in active:
-                        self._get_player(code, no)
-                    for no, p in self.teams[code]["players"].items():
-                        p.on_court = no in active
+                        if no in team_players:
+                            valid_active.append(no)
+                        elif not has_registered_roster and len(valid_active) < self.max_on_court:
+                            # Chỉ tự động thêm nếu đội hình chưa đủ số lượng trên sân
+                            self._get_player(code, no)
+                            valid_active.append(no)
+
+                    # Giới hạn số cầu thủ trên sân không vượt quá thể thức (3 cho 3x3, 5 cho 5x5)
+                    valid_active = valid_active[:self.max_on_court]
+
+                    if valid_active:
+                        for no, p in team_players.items():
+                            p.on_court = (no in valid_active)
+
                 for p in self.teams[code]["players"].values():
                     if p.on_court:
                         p.seconds_played += elapsed_seconds
@@ -224,6 +245,11 @@ class FIBABoxScoreEngine:
                 return
             team = self.teams[ev.team_code]
             opp_code = self.team_codes[1] if ev.team_code == self.team_codes[0] else self.team_codes[0]
+
+            # Kiểm tra whitelist: nếu đội đã có danh sách đăng ký và số áo lạ không thuộc danh sách -> bỏ qua
+            has_registered_roster = len(team["players"]) >= self.max_on_court
+            if has_registered_roster and ev.jersey_number not in team["players"]:
+                return
 
             p = self._get_player(ev.team_code, ev.jersey_number)
             pts = 0
@@ -359,6 +385,16 @@ class OBSVisionSystem:
         self.gemini_status = "Đang theo dõi luồng OBS..."
         self.ball_trail = deque(maxlen=12)
 
+        # Đa giác ranh giới sân đấu (Court ROI) theo tọa độ tỷ lệ (x_ratio, y_ratio: 0.0 -> 1.0)
+        # Giúp tự động loại trừ quay phim ngồi bệt ở góc, khán giả, HLV và VĐV dự bị đứng ngoài biên
+        self.court_roi_polygon = [
+            (0.04, 0.20),  # Top-left (góc trên bên trái đường biên)
+            (0.96, 0.20),  # Top-right (góc trên bên phải đường biên)
+            (0.98, 0.93),  # Bottom-right (góc dưới bên phải)
+            (0.02, 0.93),  # Bottom-left (góc dưới bên trái)
+        ]
+        self.use_court_roi = True
+
         print("[YOLO] Đang khởi tạo mô hình nhận diện Hitbox cầu thủ (yolov8n.pt)...")
         self.yolo_model = YOLO("yolov8n.pt")
 
@@ -375,13 +411,20 @@ class OBSVisionSystem:
 
         c1, c2 = self.engine.team_codes[0], self.engine.team_codes[1]
         t1, t2 = self.engine.teams[c1], self.engine.teams[c2]
+        fmt = self.engine.match_format
+        max_p = self.engine.max_on_court
 
         prompt = f"""
-        Đây là các khung hình chụp trực tiếp từ luồng OBS ghi hình trận bóng rổ (có thể là 1 góc máy hoặc ghép 2 góc máy trong OBS).
+        Đây là các khung hình chụp trực tiếp từ luồng OBS ghi hình trận bóng rổ thể thức {fmt} (Bóng rổ {fmt}).
         Hãy quan sát kỹ áo thi đấu của các cầu thủ trên sân để đọc SỐ ÁO của từng đội:
         - Đội A ({t1['name']} - {c1}): mặc áo màu {t1['color']}.
         - Đội B ({t2['name']} - {c2}): mặc áo màu {t2['color']}.
-        Trả về danh sách số áo (số nguyên, không trùng lặp). Bỏ qua trọng tài và khán giả.
+
+        QUY TẮC PHÂN LOẠI & LOẠI TRỪ BẮT BUỘC:
+        1. BỎ QUA TRỌNG TÀI: Người mặc áo xám FIBA hoặc sọc đen-trắng, quần dài thể thao màu đen, đeo còi trước ngực. TUYỆT ĐỐI KHÔNG coi trọng tài là cầu thủ.
+        2. BỎ QUA NGƯỜI NGOÀI SÂN: Huấn luyện viên, cầu thủ dự bị ngồi ngoài biên, nhân viên quay phim, ban tổ chức và khán giả.
+        3. CHỈ đọc số áo của các vận động viên đang đứng/khởi động/thi đấu trên sân thi đấu mang đúng màu áo của 2 đội trên.
+        Mỗi đội tối đa {max_p + 1} số áo (cho 3x3) hoặc 12 số áo (cho 5x5). Trả về danh sách số nguyên không trùng lặp.
         """
         try:
             print(f"[AI SCAN] Đang phân tích số áo bằng {self.gemini.active_label}...")
@@ -401,6 +444,15 @@ class OBSVisionSystem:
         ball_detected = False
         ball_data = None
 
+        h, w = frame.shape[:2]
+        court_poly_pts = np.array([
+            [int(px * w), int(py * h)] for px, py in self.court_roi_polygon
+        ], dtype=np.int32)
+
+        # Vẽ viền ranh giới sân tinh tế (mờ nhẹ để người xem nhận biết vùng thi đấu hợp lệ)
+        if self.use_court_roi:
+            cv2.polylines(frame, [court_poly_pts], isClosed=True, color=(60, 140, 90), thickness=1, lineType=cv2.LINE_AA)
+
         if results and len(results) > 0 and results[0].boxes is not None:
             for box in results[0].boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -409,14 +461,31 @@ class OBSVisionSystem:
                 track_id = int(box.id[0]) if box.id is not None else 0
 
                 if cls_id == 0 and conf >= 0.35:
-                    player_count += 1
-                    color = (0, 255, 128)
-                    label = f"Player #{track_id} ({conf:.2f})"
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
-                    cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
-                    cv2.putText(frame, label, (x1 + 2, y1 - 3),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 1)
+                    # Kiểm tra vị trí bàn chân ((x1+x2)//2, y2) có nằm trong ranh giới sân không
+                    foot_pt = (float((x1 + x2) // 2), float(y2))
+                    is_in_court = True
+                    if self.use_court_roi:
+                        is_in_court = cv2.pointPolygonTest(court_poly_pts, foot_pt, False) >= 0
+
+                    if is_in_court:
+                        player_count += 1
+                        color = (0, 255, 128)
+                        label = f"Player #{track_id} ({conf:.2f})"
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
+                        cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+                        cv2.putText(frame, label, (x1 + 2, y1 - 3),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 1)
+                    else:
+                        # Người ngoài sân (cameraman ngồi bệt, VĐV dự bị, HLV, khán giả)
+                        dim_color = (80, 85, 95)
+                        label = f"Outside #{track_id}"
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), dim_color, 1)
+                        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+                        cv2.rectangle(frame, (x1, y1 - th - 4), (x1 + tw + 4, y1), dim_color, -1)
+                        cv2.putText(frame, label, (x1 + 2, y1 - 2),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (200, 205, 215), 1)
+
                 elif cls_id == 32 and conf >= 0.18:
                     ball_detected = True
                     ball_data = (x1, y1, x2, y2, conf)
@@ -452,27 +521,39 @@ class OBSVisionSystem:
         clean_status = "".join(c for c in unicodedata.normalize('NFKD', self.gemini_status) if not unicodedata.combining(c)).replace('đ', 'd').replace('Đ', 'D')
         ball_label = "LOCKED" if ball_detected else "SEARCHING"
 
-        cv2.rectangle(frame, (10, 10), (620, 82), (15, 17, 23), -1)
-        cv2.putText(frame, f"OBS LIVE | Players: {player_count} | Ball: {ball_label} | {self.gemini.active_label}", (20, 36),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 200), 2)
-        cv2.putText(frame, f"AI: {clean_status[:55]}", (20, 66),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, (210, 215, 225), 1)
+        cv2.rectangle(frame, (10, 10), (660, 82), (15, 17, 23), -1)
+        cv2.putText(frame, f"OBS LIVE | On-Court: {player_count} ({self.engine.match_format}) | Ball: {ball_label} | {self.gemini.active_label}", (20, 36),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.54, (0, 255, 200), 2)
+        cv2.putText(frame, f"AI: {clean_status[:60]}", (20, 66),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (210, 215, 225), 1)
         return frame, player_count
 
     def _analyze_clip(self, clip_path: str) -> Optional[ClipAnalysisResult]:
         roster_text = self.engine.get_roster_summary_for_prompt()
+        fmt = self.engine.match_format
+        max_p = self.engine.max_on_court
         prompt = f"""
-        Bạn là trọng tài bàn thống kê FIBA chuyên nghiệp.
+        Bạn là trọng tài bàn thống kê FIBA chuyên nghiệp cho trận đấu bóng rổ thể thức {fmt} (Bóng rổ {fmt}).
         Đoạn video này được ghi trực tiếp từ luồng OBS Studio (nếu OBS ghép song song 2 góc máy cùng lúc, CHỈ GHI NHẬN 1 LẦN DUY NHẤT cho mỗi pha bóng thực tế).
 
-        Danh sách đội hình đã đăng ký trên sân:
+        Danh sách đội hình chính thức đã đăng ký:
         {roster_text}
 
-        Hãy đối chiếu số áo để ghi nhận chính xác:
-        - Danh sách số áo các cầu thủ đang có mặt trên sân (active_players_team_a, active_players_team_b).
-        - Mọi sự kiện: 2PT_MADE/MISSED, 3PT_MADE/MISSED, FT_MADE/MISSED, OREB, DREB, ASSIST, TURNOVER, STEAL, BLOCK, FOUL_PERSONAL, FOUL_DRAWN, SUBSTITUTION_IN/OUT.
-        - 1.0 giây đầu video là phần lặp lại cuối clip trước (chỉ để lấy ngữ cảnh): KHÔNG ghi nhận sự kiện kết thúc trong khoảng này.
-        - Pha bóng bị cắt ở cuối video chưa thấy kết quả thì bỏ qua (clip sau sẽ ghi nhận).
+        QUY TẮC LOẠI TRỪ & PHÂN BIỆT ĐỐI TƯỢNG (RẤT QUAN TRỌNG):
+        1. TRỌNG TÀI (Referees): Thường mặc áo xám FIBA hoặc áo sọc đen-trắng, quần dài thể thao màu đen, đeo còi trước ngực.
+           -> TUYỆT ĐỐI KHÔNG COI TRỌNG TÀI LÀ CẦU THỦ.
+           -> KHÔNG đưa trọng tài vào active_players và KHÔNG ghi nhận bất kỳ sự kiện nào cho trọng tài.
+        2. VẬN ĐỘNG VIÊN DỰ BỊ, BAN HUẤN LUYỆN, QUAY PHIM & KHÁN GIẢ:
+           - Những người đứng/ngồi bên ngoài đường biên (sideline/baseline), ngoài rào chắn, hoặc sau bảng rổ.
+           -> TUYỆT ĐỐI KHÔNG đưa vào danh sách active_players và KHÔNG ghi nhận sự kiện thi đấu.
+        3. CẦU THỦ ĐANG THI ĐẤU TRÊN SÂN (active_players_team_a, active_players_team_b):
+           - CHỈ bao gồm các cầu thủ đang thực sự thi đấu trong ranh giới sân bóng.
+           - Giới hạn: Mỗi đội TỐI ĐA {max_p} CẦU THỦ trên sân cùng lúc (Thể thức {fmt}: tổng cộng tối đa {max_p * 2} cầu thủ trên sân).
+           - Đối chiếu chính xác số áo theo danh sách đăng ký ở trên.
+        4. SỰ KIỆN THI ĐẤU:
+           - Ghi nhận: 2PT_MADE/MISSED, 3PT_MADE/MISSED, FT_MADE/MISSED, OREB, DREB, ASSIST, TURNOVER, STEAL, BLOCK, FOUL_PERSONAL, FOUL_DRAWN, SUBSTITUTION_IN/OUT.
+           - 1.0 giây đầu video là phần lặp lại cuối clip trước (chỉ để lấy ngữ cảnh): KHÔNG ghi nhận sự kiện kết thúc trong khoảng này.
+           - Pha bóng bị cắt ở cuối video chưa thấy kết quả thì bỏ qua (clip sau sẽ ghi nhận).
         """
         return self.gemini.analyze_video_clip(clip_path, prompt)
 
@@ -690,7 +771,7 @@ def generate_boxscore_tables_html(engine: FIBABoxScoreEngine) -> str:
         <!-- SCOREBOARD BROADCAST BANNER -->
         <div class="score-banner-card">
             <div class="banner-top-meta">
-                <span class="live-pill"><span class="pulse-dot"></span> FIBA LIVE MATCH TRACKER</span>
+                <span class="live-pill"><span class="pulse-dot"></span> FIBA LIVE {engine.match_format.upper()} TRACKER</span>
                 <span class="banner-sub-text">BẢNG ĐIỂM TRỰC TIẾP TỪ OBS VISION AI</span>
             </div>
             <div class="scoreboard-grid">
@@ -1394,13 +1475,14 @@ def console_input_player_names(engine: FIBABoxScoreEngine, team_code: str, detec
         return
 
     print(f"Nhập tên cho từng số áo của đội {team_name} (thêm '(C)' cuối tên nếu là Đội trưởng):")
-    for num in detected_numbers:
+    for idx, num in enumerate(detected_numbers):
         raw_name = input(f"   + Số áo #{num} -> Tên cầu thủ: ").strip()
         if not raw_name:
             raw_name = f"CẦU THỦ #{num}"
         is_cap = "(C)" in raw_name.upper()
         clean_name = raw_name.replace("(C)", "").replace("(c)", "").strip()
-        engine.register_player(team_code, num, clean_name, is_starter=True, is_captain=is_cap)
+        is_starter = (idx < engine.max_on_court)
+        engine.register_player(team_code, num, clean_name, is_starter=is_starter, is_captain=is_cap)
 
 
 if __name__ == "__main__":
@@ -1411,8 +1493,12 @@ if __name__ == "__main__":
     # BƯỚC 1: Bắt buộc điền đủ Luồng OBS + API 1 + API 2 mới đi tiếp
     obs_source, api_1, api_2 = collect_required_config()
 
-    # BƯỚC 2: Nhập thông tin 2 đội bóng
-    print("\n--- BƯỚC 2: THÔNG TIN 2 ĐỘI THI ĐẤU ---")
+    # BƯỚC 2: Nhập thông tin 2 đội bóng & thể thức thi đấu
+    print("\n--- BƯỚC 2: THÔNG TIN 2 ĐỘI THI ĐẤU & THỂ THỨC ---")
+    fmt_choice = input(">> Thể thức thi đấu ([1] Bóng rổ 3x3 | [2] Bóng rổ 5x5) [Mặc định: 1 - 3x3]: ").strip()
+    match_format = "5x5" if fmt_choice in ("2", "5x5", "5") else "3x3"
+    print(f"    -> Đã chọn thể thức: Bóng rổ {match_format}")
+
     team_a_name = input(">> Tên Đội 1 (Enter để dùng 'HÀ NỘI'): ").strip() or "HÀ NỘI"
     team_a_code = input(">> Mã viết tắt Đội 1 (Enter để dùng 'HNB'): ").strip().upper() or "HNB"
     team_a_color = input(">> Màu áo Đội 1 (VD: Trắng): ").strip() or "Trắng"
@@ -1426,7 +1512,8 @@ if __name__ == "__main__":
     gemini_manager = GeminiFailoverManager(api_1, api_2)
     boxscore_engine = FIBABoxScoreEngine(
         team_a_code, team_a_name, team_a_color,
-        team_b_code, team_b_name, team_b_color
+        team_b_code, team_b_name, team_b_color,
+        match_format=match_format
     )
     vision_system = OBSVisionSystem(obs_reader, boxscore_engine, gemini_manager)
 
