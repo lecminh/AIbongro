@@ -1,0 +1,6 @@
+flask
+opencv-python
+numpy
+pydantic
+ultralytics
+google-genai

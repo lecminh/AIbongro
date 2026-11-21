@@ -1,0 +1,4 @@
+temp_obs_clip_*.mp4
+__pycache__/
+*.pt
+.env
