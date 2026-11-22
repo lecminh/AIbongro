@@ -373,29 +373,29 @@ class AsyncOBSReader:
 
 
 class CourtBoundaryManager:
-    """Quản lý và căn chỉnh ranh giới vạch biên sân thi đấu (Court Boundary).
-    Tự động lưu/tải từ court_config.json, hỗ trợ AI quét vạch và căn chỉnh kéo thả trên web."""
+    """Quản lý ranh giới sân đấu (Đa giác N-điểm bám mép màn hình) + Vùng loại trừ (Exclusion Zones).
+    Tự động lưu/tải từ court_config.json, hỗ trợ AI quét vạch và căn chỉnh tương tác trên web."""
     def __init__(self, match_format: str = "3x3", config_path: str = "court_config.json"):
         self.config_path = config_path
         self.match_format = match_format
         self.lock = threading.Lock()
+        self.exclusion_zones: List[List[float]] = []  # Danh sách [x1, y1, x2, y2] tỷ lệ 0.0 -> 1.0
 
-        # Tọa độ tỷ lệ mặc định theo phối cảnh góc máy truyền hình thực tế:
+        # Tọa độ tỷ lệ mặc định (Ngũ giác 5 điểm cho 3x3 ôm trọn đáy màn hình khi vạch sân tràn khung hình)
         if "3" in match_format:
-            # 3x3: Nửa sân góc xiên, loại trừ hàng ghế dự bị bên trái và khu vực cameraman góc dưới
             self.polygon = [
-                (0.28, 0.32),  # Top-Left: góc trên-trái baseline (trong vạch biên, ngoài ghế dự bị)
-                (0.88, 0.30),  # Top-Right: góc trên-phải baseline
-                (0.84, 0.90),  # Bottom-Right: góc dưới-phải (trên cameraman)
-                (0.10, 0.90),  # Bottom-Left: góc dưới-trái (dưới ghế dự bị)
+                (0.00, 0.42),  # Mép trái nơi vạch biên cắt cạnh trái màn hình
+                (0.62, 0.24),  # Góc trên-phải baseline
+                (1.00, 0.36),  # Mép phải nơi vạch biên cắt cạnh phải màn hình
+                (1.00, 1.00),  # Góc dưới-phải màn hình (ôm trọn góc tràn)
+                (0.00, 1.00),  # Góc dưới-trái màn hình (ôm trọn góc tràn)
             ]
         else:
-            # 5x5: Toàn sân
             self.polygon = [
-                (0.08, 0.22),
-                (0.92, 0.22),
-                (0.96, 0.92),
-                (0.04, 0.92),
+                (0.00, 0.22),
+                (1.00, 0.22),
+                (1.00, 1.00),
+                (0.00, 1.00),
             ]
         self.load_from_file()
 
@@ -404,9 +404,18 @@ class CourtBoundaryManager:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    if "polygon" in data and len(data["polygon"]) >= 4:
-                        self.polygon = [(float(p[0]), float(p[1])) for p in data["polygon"][:4]]
-                        print(f"[Court Boundary] Đã tải ranh giới vạch sân từ {self.config_path}")
+                    loaded = False
+                    if "polygon" in data and len(data["polygon"]) >= 3:
+                        self.polygon = [(float(p[0]), float(p[1])) for p in data["polygon"]]
+                        loaded = True
+                    if "exclusion_zones" in data and isinstance(data["exclusion_zones"], list):
+                        self.exclusion_zones = [
+                            [float(z[0]), float(z[1]), float(z[2]), float(z[3])]
+                            for z in data["exclusion_zones"] if len(z) == 4
+                        ]
+                        loaded = True
+                    if loaded:
+                        print(f"[Court Boundary] Đã tải {len(self.polygon)} điểm sân & {len(self.exclusion_zones)} vùng loại trừ từ {self.config_path}")
                         return True
             except Exception as e:
                 print(f"[Court Boundary] Lỗi đọc {self.config_path}: {e}")
@@ -418,18 +427,38 @@ class CourtBoundaryManager:
                 json.dump({
                     "match_format": self.match_format,
                     "polygon": self.polygon,
+                    "exclusion_zones": self.exclusion_zones,
                     "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")
                 }, f, indent=2)
-            print(f"[Court Boundary] Đã lưu ranh giới vạch sân vào {self.config_path}")
+            print(f"[Court Boundary] Đã lưu cấu hình sân ({len(self.polygon)} điểm, {len(self.exclusion_zones)} vùng loại trừ) vào {self.config_path}")
         except Exception as e:
             print(f"[Court Boundary] Lỗi lưu {self.config_path}: {e}")
 
     def set_polygon(self, pts: List[Union[List[float], tuple]]):
+        if len(pts) < 3:
+            return
         with self.lock:
             self.polygon = [
                 (max(0.0, min(1.0, float(p[0]))), max(0.0, min(1.0, float(p[1]))))
-                for p in pts[:4]
+                for p in pts
             ]
+            self.save_to_file()
+
+    def set_config(self, pts: Optional[List[Union[List[float], tuple]]] = None,
+                   exclusion_zones: Optional[List[List[float]]] = None):
+        with self.lock:
+            if pts is not None and len(pts) >= 3:
+                self.polygon = [
+                    (max(0.0, min(1.0, float(p[0]))), max(0.0, min(1.0, float(p[1]))))
+                    for p in pts
+                ]
+            if exclusion_zones is not None:
+                clean_zones = []
+                for z in exclusion_zones:
+                    if len(z) == 4:
+                        x1, y1, x2, y2 = [max(0.0, min(1.0, float(v))) for v in z]
+                        clean_zones.append([min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)])
+                self.exclusion_zones = clean_zones
             self.save_to_file()
 
     def get_pixel_polygon(self, width: int, height: int) -> np.ndarray:
@@ -438,8 +467,24 @@ class CourtBoundaryManager:
                 [int(px * width), int(py * height)] for px, py in self.polygon
             ], dtype=np.int32)
 
+    def get_pixel_exclusions(self, width: int, height: int) -> List[tuple]:
+        with self.lock:
+            return [
+                (int(z[0] * width), int(z[1] * height), int(z[2] * width), int(z[3] * height))
+                for z in self.exclusion_zones
+            ]
+
     def is_in_court(self, foot_x: float, foot_y: float, width: int, height: int) -> bool:
-        poly_pts = self.get_pixel_polygon(width, height)
+        fx_ratio = foot_x / max(1, width)
+        fy_ratio = foot_y / max(1, height)
+        with self.lock:
+            # Ưu tiên 1: Nếu bàn chân nằm trong bất kỳ Vùng Loại Trừ nào -> loại ngay
+            for x1, y1, x2, y2 in self.exclusion_zones:
+                if x1 <= fx_ratio <= x2 and y1 <= fy_ratio <= y2:
+                    return False
+            poly_pts = np.array([
+                [int(px * width), int(py * height)] for px, py in self.polygon
+            ], dtype=np.int32)
         return cv2.pointPolygonTest(poly_pts, (float(foot_x), float(foot_y)), False) >= 0
 
 
@@ -531,14 +576,18 @@ class OBSVisionSystem:
         h, w = frame.shape[:2]
         court_poly_pts = self.court_mgr.get_pixel_polygon(w, h)
 
-        # Vẽ viền ranh giới sân thực tế theo phối cảnh (cyan viền sắc nét)
+        # Vẽ viền ranh giới sân N-điểm (cyan) & các vùng loại trừ (đỏ mờ)
         if self.use_court_roi:
-            cv2.polylines(frame, [court_poly_pts], isClosed=True, color=(0, 220, 255), thickness=2, lineType=cv2.LINE_AA)
-            corner_labels = ["TL", "TR", "BR", "BL"]
-            for idx, (px, py) in enumerate(court_poly_pts):
-                cv2.circle(frame, (int(px), int(py)), 5, (0, 255, 255), -1)
-                cv2.putText(frame, corner_labels[idx], (int(px) + 5, int(py) - 4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 240, 255), 1)
+            if len(court_poly_pts) >= 3:
+                cv2.polylines(frame, [court_poly_pts], isClosed=True, color=(0, 220, 255), thickness=2, lineType=cv2.LINE_AA)
+                for idx, (px, py) in enumerate(court_poly_pts):
+                    cv2.circle(frame, (int(px), int(py)), 4, (0, 255, 255), -1)
+                    cv2.putText(frame, f"P{idx + 1}", (int(px) + 5, int(py) - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 240, 255), 1)
+            for ex1, ey1, ex2, ey2 in self.court_mgr.get_pixel_exclusions(w, h):
+                cv2.rectangle(frame, (ex1, ey1), (ex2, ey2), (50, 50, 240), 2)
+                cv2.putText(frame, "NO-TRACK", (ex1 + 4, ey1 + 14),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (60, 80, 255), 1)
 
         if results and len(results) > 0 and results[0].boxes is not None:
             for box in results[0].boxes:
@@ -1454,14 +1503,25 @@ def index():
                     </div>
                 </div>
                 <div id="calibPanel" style="display: none; background: #0f172a; border-top: 1px solid #1e293b; padding: 12px 16px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <span style="font-weight: 600; color: #38bdf8; font-size: 13px;">Kéo 4 chốt góc trên video để bám sát vạch biên sân thi đấu (Sidelines & Baseline)</span>
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
+                        <div style="display: flex; gap: 6px;">
+                            <button id="modePolyBtn" onclick="setCalibMode('polygon')" style="background: #0284c7; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">
+                                🟢 Ranh giới sân (N-điểm)
+                            </button>
+                            <button id="modeExclBtn" onclick="setCalibMode('exclusion')" style="background: #1e293b; color: #f87171; border: 1px solid #ef4444; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">
+                                🔴 Vẽ vùng loại trừ (Ghế dự bị / Quay phim)
+                            </button>
+                        </div>
                         <span id="calibStatus" style="font-size: 12px; color: #4ade80;"></span>
                     </div>
-                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                        <button onclick="saveCourtPoly()" style="background: #0284c7; color: white; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">💾 Lưu ranh giới sân</button>
-                        <button onclick="setCourtPreset('3x3')" style="background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">Góc chuẩn 3x3</button>
-                        <button onclick="setCourtPreset('5x5')" style="background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">Góc chuẩn 5x5</button>
+                    <div id="calibHint" style="font-size: 12px; color: #94a3b8; margin-bottom: 10px;">
+                        • Kéo chốt để chỉnh góc (tự động hút sát mép khung hình khi vạch sân tràn) • <b>Double-click</b> để thêm góc mới • <b>Chuột phải</b> vào chốt để xóa góc.
+                    </div>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                        <button onclick="saveCourtConfig()" style="background: #10b981; color: white; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">💾 Lưu cấu hình</button>
+                        <button onclick="setCourtPreset('3x3')" style="background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">Mẫu 3x3 (5 góc ôm đáy)</button>
+                        <button onclick="setCourtPreset('full')" style="background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">Toàn màn hình (4 góc)</button>
+                        <button onclick="clearExclusionZones()" style="background: #450a0a; color: #fca5a5; border: 1px solid #991b1b; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">🗑️ Xóa hết vùng đỏ</button>
                         <button onclick="toggleCourtCalib()" style="background: transparent; color: #94a3b8; border: 1px solid #475569; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-left: auto;">✕ Đóng</button>
                     </div>
                 </div>
@@ -1480,24 +1540,53 @@ def index():
             setInterval(refreshBoxScore, 2000);
             refreshBoxScore();
 
-            // QUẢN LÝ CĂN CHỈNH VẠCH SÂN TƯƠNG TÁC
+            // QUẢN LÝ CĂN CHỈNH VẠCH SÂN (N-ĐIỂM + EDGE SNAP) & VÙNG LOẠI TRỪ (EXCLUSION ZONES)
             let calibActive = false;
+            let calibMode = 'polygon'; // 'polygon' | 'exclusion'
             let courtPoints = [
-                [0.28, 0.32],
-                [0.88, 0.30],
-                [0.84, 0.90],
-                [0.10, 0.90]
+                [0.00, 0.42],
+                [0.62, 0.24],
+                [1.00, 0.36],
+                [1.00, 1.00],
+                [0.00, 1.00]
             ];
-            const pointColors = ['#ef4444', '#3b82f6', '#eab308', '#22c55e'];
-            const pointLabels = ['TL (Baseline L)', 'TR (Baseline R)', 'BR (Court R)', 'BL (Court L)'];
+            let exclusionZones = []; // [[x1, y1, x2, y2], ...]
             let activeDragIdx = -1;
+            let drawingExcl = null;  // {x1, y1, x2, y2}
 
-            function fetchCourtPolygon() {
+            function snapToEdge(val) {
+                const snapThreshold = 0.025;
+                if (val < snapThreshold) return 0.0;
+                if (val > 1.0 - snapThreshold) return 1.0;
+                return val;
+            }
+
+            function setCalibMode(mode) {
+                calibMode = mode;
+                const pBtn = document.getElementById('modePolyBtn');
+                const eBtn = document.getElementById('modeExclBtn');
+                const hint = document.getElementById('calibHint');
+                if (mode === 'polygon') {
+                    pBtn.style.background = '#0284c7'; pBtn.style.color = '#fff'; pBtn.style.border = 'none';
+                    eBtn.style.background = '#1e293b'; eBtn.style.color = '#f87171'; eBtn.style.border = '1px solid #ef4444';
+                    hint.innerHTML = '• Kéo chốt để chỉnh góc (tự động hút sát mép khung hình khi vạch sân tràn) • <b>Double-click</b> để thêm góc mới • <b>Chuột phải</b> vào chốt để xóa góc.';
+                } else {
+                    eBtn.style.background = '#dc2626'; eBtn.style.color = '#fff'; eBtn.style.border = 'none';
+                    pBtn.style.background = '#1e293b'; pBtn.style.color = '#38bdf8'; pBtn.style.border = '1px solid #0284c7';
+                    hint.innerHTML = '• <b>Nhấn giữ và kéo chuột</b> trên video để khoanh vùng đỏ loại trừ (ghế dự bị, quay phim, khán giả) • <b>Chuột phải</b> vào ô đỏ để xóa.';
+                }
+                drawCalibCanvas();
+            }
+
+            function fetchCourtConfig() {
                 fetch('/api/get_court_polygon').then(r => r.json()).then(data => {
-                    if (data.polygon && data.polygon.length >= 4) {
+                    if (data.polygon && data.polygon.length >= 3) {
                         courtPoints = data.polygon;
-                        drawCalibCanvas();
                     }
+                    if (Array.isArray(data.exclusion_zones)) {
+                        exclusionZones = data.exclusion_zones;
+                    }
+                    drawCalibCanvas();
                 }).catch(e => console.error(e));
             }
 
@@ -1511,7 +1600,7 @@ def index():
                     panel.style.display = 'block';
                     btn.style.background = '#0284c7';
                     btn.style.color = '#ffffff';
-                    fetchCourtPolygon();
+                    fetchCourtConfig();
                     initCanvasEvents();
                 } else {
                     canvas.style.display = 'none';
@@ -1530,37 +1619,90 @@ def index():
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-                // Vẽ đa giác ranh giới sân
-                ctx.beginPath();
-                courtPoints.forEach((p, i) => {
-                    const x = p[0] * canvas.width;
-                    const y = p[1] * canvas.height;
-                    if (i === 0) ctx.moveTo(x, y);
-                    else ctx.lineTo(x, y);
-                });
-                ctx.closePath();
-                ctx.fillStyle = 'rgba(2, 132, 199, 0.18)';
-                ctx.fill();
-                ctx.strokeStyle = '#00e5ff';
-                ctx.lineWidth = 2;
-                ctx.stroke();
-
-                // Vẽ 4 chốt điều khiển
-                courtPoints.forEach((p, i) => {
-                    const x = p[0] * canvas.width;
-                    const y = p[1] * canvas.height;
+                // 1. Vẽ đa giác ranh giới sân (N-điểm)
+                if (courtPoints.length >= 3) {
                     ctx.beginPath();
-                    ctx.arc(x, y, 9, 0, Math.PI * 2);
-                    ctx.fillStyle = pointColors[i];
+                    courtPoints.forEach((p, i) => {
+                        const x = p[0] * canvas.width;
+                        const y = p[1] * canvas.height;
+                        if (i === 0) ctx.moveTo(x, y);
+                        else ctx.lineTo(x, y);
+                    });
+                    ctx.closePath();
+                    ctx.fillStyle = 'rgba(2, 132, 199, 0.16)';
                     ctx.fill();
-                    ctx.strokeStyle = '#ffffff';
+                    ctx.strokeStyle = '#00e5ff';
                     ctx.lineWidth = 2;
                     ctx.stroke();
 
-                    ctx.fillStyle = '#ffffff';
+                    // Vẽ các chốt góc P1..PN
+                    courtPoints.forEach((p, i) => {
+                        const x = p[0] * canvas.width;
+                        const y = p[1] * canvas.height;
+                        ctx.beginPath();
+                        ctx.arc(x, y, calibMode === 'polygon' ? 8 : 5, 0, Math.PI * 2);
+                        ctx.fillStyle = (p[0] === 0 || p[0] === 1 || p[1] === 0 || p[1] === 1) ? '#22c55e' : '#0ea5e9';
+                        ctx.fill();
+                        ctx.strokeStyle = '#ffffff';
+                        ctx.lineWidth = 2;
+                        ctx.stroke();
+
+                        ctx.fillStyle = '#ffffff';
+                        ctx.font = 'bold 11px sans-serif';
+                        const lx = x > canvas.width - 35 ? x - 26 : x + 10;
+                        const ly = y < 18 ? y + 16 : y - 6;
+                        ctx.fillText('P' + (i + 1), lx, ly);
+                    });
+                }
+
+                // 2. Vẽ các vùng loại trừ (Exclusion Zones) màu đỏ
+                const allExcl = [...exclusionZones];
+                if (drawingExcl) {
+                    allExcl.push([
+                        Math.min(drawingExcl.x1, drawingExcl.x2),
+                        Math.min(drawingExcl.y1, drawingExcl.y2),
+                        Math.max(drawingExcl.x1, drawingExcl.x2),
+                        Math.max(drawingExcl.y1, drawingExcl.y2)
+                    ]);
+                }
+                allExcl.forEach((z, idx) => {
+                    const x = z[0] * canvas.width;
+                    const y = z[1] * canvas.height;
+                    const w = (z[2] - z[0]) * canvas.width;
+                    const h = (z[3] - z[1]) * canvas.height;
+                    ctx.fillStyle = 'rgba(239, 68, 68, 0.30)';
+                    ctx.fillRect(x, y, w, h);
+                    ctx.strokeStyle = '#ef4444';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x, y, w, h);
+                    ctx.fillStyle = '#fecaca';
                     ctx.font = 'bold 11px sans-serif';
-                    ctx.fillText(pointLabels[i], x + 12, y + 4);
+                    ctx.fillText('NO-TRACK #' + (idx + 1), x + 5, y + 14);
                 });
+            }
+
+            // Tìm cạnh gần nhất để chèn thêm điểm mới khi double-click
+            function insertPointOnNearestEdge(mx, my) {
+                let bestIdx = courtPoints.length;
+                let minDist = Infinity;
+                const n = courtPoints.length;
+                for (let i = 0; i < n; i++) {
+                    const a = courtPoints[i];
+                    const b = courtPoints[(i + 1) % n];
+                    const dx = b[0] - a[0], dy = b[1] - a[1];
+                    const lenSq = dx * dx + dy * dy;
+                    let t = lenSq > 0 ? ((mx - a[0]) * dx + (my - a[1]) * dy) / lenSq : 0;
+                    t = Math.max(0, Math.min(1, t));
+                    const px = a[0] + t * dx, py = a[1] + t * dy;
+                    const d = Math.hypot(mx - px, my - py);
+                    if (d < minDist) {
+                        minDist = d;
+                        bestIdx = i + 1;
+                    }
+                }
+                courtPoints.splice(bestIdx, 0, [snapToEdge(mx), snapToEdge(my)]);
+                drawCalibCanvas();
+                saveCourtConfig();
             }
 
             function initCanvasEvents() {
@@ -1568,36 +1710,96 @@ def index():
                 if (!canvas || canvas.dataset.hasEvents) return;
                 canvas.dataset.hasEvents = 'true';
 
-                canvas.addEventListener('mousedown', e => {
+                canvas.addEventListener('contextmenu', e => {
+                    e.preventDefault();
                     const rect = canvas.getBoundingClientRect();
                     const mx = (e.clientX - rect.left) / rect.width;
                     const my = (e.clientY - rect.top) / rect.height;
-                    let closestIdx = -1;
-                    let minDist = 0.08;
-                    courtPoints.forEach((p, i) => {
-                        const d = Math.hypot(p[0] - mx, p[1] - my);
-                        if (d < minDist) {
-                            minDist = d;
-                            closestIdx = i;
+
+                    if (calibMode === 'polygon') {
+                        if (courtPoints.length <= 3) return;
+                        let closestIdx = -1, minDist = 0.05;
+                        courtPoints.forEach((p, i) => {
+                            const d = Math.hypot(p[0] - mx, p[1] - my);
+                            if (d < minDist) { minDist = d; closestIdx = i; }
+                        });
+                        if (closestIdx !== -1) {
+                            courtPoints.splice(closestIdx, 1);
+                            drawCalibCanvas();
+                            saveCourtConfig();
                         }
-                    });
-                    activeDragIdx = closestIdx;
+                    } else {
+                        // Xóa vùng loại trừ dưới con trỏ chuột phải
+                        for (let i = exclusionZones.length - 1; i >= 0; i--) {
+                            const z = exclusionZones[i];
+                            if (mx >= z[0] && mx <= z[2] && my >= z[1] && my <= z[3]) {
+                                exclusionZones.splice(i, 1);
+                                drawCalibCanvas();
+                                saveCourtConfig();
+                                break;
+                            }
+                        }
+                    }
+                });
+
+                canvas.addEventListener('dblclick', e => {
+                    if (calibMode !== 'polygon') return;
+                    const rect = canvas.getBoundingClientRect();
+                    const mx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                    const my = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+                    insertPointOnNearestEdge(mx, my);
+                });
+
+                canvas.addEventListener('mousedown', e => {
+                    if (e.button !== 0) return;
+                    const rect = canvas.getBoundingClientRect();
+                    const mx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                    const my = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+
+                    if (calibMode === 'polygon') {
+                        let closestIdx = -1, minDist = 0.06;
+                        courtPoints.forEach((p, i) => {
+                            const d = Math.hypot(p[0] - mx, p[1] - my);
+                            if (d < minDist) { minDist = d; closestIdx = i; }
+                        });
+                        activeDragIdx = closestIdx;
+                    } else {
+                        drawingExcl = {x1: mx, y1: my, x2: mx, y2: my};
+                    }
                 });
 
                 window.addEventListener('mousemove', e => {
-                    if (!calibActive || activeDragIdx === -1) return;
+                    if (!calibActive) return;
                     const canvas = document.getElementById('courtCanvas');
                     const rect = canvas.getBoundingClientRect();
                     const mx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
                     const my = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-                    courtPoints[activeDragIdx] = [mx, my];
-                    drawCalibCanvas();
+
+                    if (calibMode === 'polygon' && activeDragIdx !== -1) {
+                        courtPoints[activeDragIdx] = [snapToEdge(mx), snapToEdge(my)];
+                        drawCalibCanvas();
+                    } else if (calibMode === 'exclusion' && drawingExcl) {
+                        drawingExcl.x2 = mx;
+                        drawingExcl.y2 = my;
+                        drawCalibCanvas();
+                    }
                 });
 
                 window.addEventListener('mouseup', () => {
                     if (activeDragIdx !== -1) {
                         activeDragIdx = -1;
-                        saveCourtPoly();
+                        saveCourtConfig();
+                    } else if (drawingExcl) {
+                        const x1 = Math.min(drawingExcl.x1, drawingExcl.x2);
+                        const y1 = Math.min(drawingExcl.y1, drawingExcl.y2);
+                        const x2 = Math.max(drawingExcl.x1, drawingExcl.x2);
+                        const y2 = Math.max(drawingExcl.y1, drawingExcl.y2);
+                        drawingExcl = null;
+                        if ((x2 - x1) > 0.02 && (y2 - y1) > 0.02) {
+                            exclusionZones.push([x1, y1, x2, y2]);
+                            saveCourtConfig();
+                        }
+                        drawCalibCanvas();
                     }
                 });
 
@@ -1606,29 +1808,35 @@ def index():
                 });
             }
 
-            function saveCourtPoly() {
+            function saveCourtConfig() {
                 const status = document.getElementById('calibStatus');
                 status.innerText = 'Đang lưu...';
                 fetch('/api/set_court_polygon', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({polygon: courtPoints})
+                    body: JSON.stringify({polygon: courtPoints, exclusion_zones: exclusionZones})
                 }).then(r => r.json()).then(data => {
-                    status.innerText = '✓ Đã cập nhật ranh giới vạch sân!';
+                    status.innerText = '✓ Đã lưu (' + courtPoints.length + ' góc, ' + exclusionZones.length + ' vùng đỏ)';
                     setTimeout(() => { if (status) status.innerText = ''; }, 3000);
                 }).catch(e => {
                     status.innerText = 'Lỗi lưu: ' + e;
                 });
             }
 
+            function clearExclusionZones() {
+                exclusionZones = [];
+                drawCalibCanvas();
+                saveCourtConfig();
+            }
+
             function setCourtPreset(preset) {
                 if (preset === '3x3') {
-                    courtPoints = [[0.28, 0.32], [0.88, 0.30], [0.84, 0.90], [0.10, 0.90]];
+                    courtPoints = [[0.00, 0.42], [0.62, 0.24], [1.00, 0.36], [1.00, 1.00], [0.00, 1.00]];
                 } else {
-                    courtPoints = [[0.08, 0.22], [0.92, 0.22], [0.96, 0.92], [0.04, 0.92]];
+                    courtPoints = [[0.00, 0.00], [1.00, 0.00], [1.00, 1.00], [0.00, 1.00]];
                 }
                 drawCalibCanvas();
-                saveCourtPoly();
+                saveCourtConfig();
             }
         </script>
     </body>
@@ -1652,17 +1860,27 @@ def boxscore_data():
 @app.route("/api/get_court_polygon")
 def get_court_polygon():
     if vision_system and vision_system.court_mgr:
-        return jsonify({"polygon": vision_system.court_mgr.polygon})
-    return jsonify({"polygon": []})
+        return jsonify({
+            "polygon": vision_system.court_mgr.polygon,
+            "exclusion_zones": vision_system.court_mgr.exclusion_zones
+        })
+    return jsonify({"polygon": [], "exclusion_zones": []})
 
 @app.route("/api/set_court_polygon", methods=["POST"])
 def set_court_polygon():
     data = request.get_json(silent=True) or {}
     poly = data.get("polygon")
-    if vision_system and vision_system.court_mgr and poly and len(poly) >= 4:
-        vision_system.court_mgr.set_polygon(poly)
-        return jsonify({"status": "ok", "polygon": vision_system.court_mgr.polygon})
-    return jsonify({"status": "error", "message": "Invalid polygon"}), 400
+    excl = data.get("exclusion_zones")
+    if vision_system and vision_system.court_mgr and (poly is not None or excl is not None):
+        if poly is not None and len(poly) < 3:
+            return jsonify({"status": "error", "message": "Polygon needs at least 3 points"}), 400
+        vision_system.court_mgr.set_config(pts=poly, exclusion_zones=excl)
+        return jsonify({
+            "status": "ok",
+            "polygon": vision_system.court_mgr.polygon,
+            "exclusion_zones": vision_system.court_mgr.exclusion_zones
+        })
+    return jsonify({"status": "error", "message": "Invalid config"}), 400
 
 
 # =====================================================================
