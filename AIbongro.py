@@ -488,6 +488,336 @@ class CourtBoundaryManager:
         return cv2.pointPolygonTest(poly_pts, (float(foot_x), float(foot_y)), False) >= 0
 
 
+class PersistentPlayerReID:
+    """Bộ gắn cố định mã VĐV (VDV-01..VDV-06 cho 3x3, VDV-01..VDV-10 cho 5x5).
+    Lưu hồ sơ ngoại hình đa vùng (Áo 45% + Quần 25% + Giày 30%) + vị trí cuối
+    để tự động khôi phục đúng mã cũ khi YOLO mất dấu/đổi track_id."""
+
+    SLOT_COLORS = [
+        (0, 230, 118),   # VDV-01: Xanh lá neon
+        (0, 212, 255),   # VDV-02: Vàng cyan
+        (255, 196, 0),   # VDV-03: Xanh dương sáng
+        (94, 211, 244),  # VDV-04: Vàng FIBA
+        (75, 150, 238),  # VDV-05: Cam thể thao
+        (235, 130, 255), # VDV-06: Tím sáng
+        (160, 255, 120), # VDV-07
+        (255, 170, 120), # VDV-08
+        (120, 220, 255), # VDV-09
+        (255, 220, 180), # VDV-10
+    ]
+
+    def __init__(self, max_slots: int = 6):
+        self.max_slots = max_slots
+        self.lock = threading.Lock()
+        self.slots: dict = {}          # slot_id -> {feat, last_pos, last_seen, alias, color}
+        self.track_to_slot: dict = {}  # yolo_track_id -> slot_id
+        self.frame_idx: int = 0
+
+    def reset(self):
+        with self.lock:
+            self.slots.clear()
+            self.track_to_slot.clear()
+            self.frame_idx = 0
+            print("[Re-ID] Đã đặt lại toàn bộ mã VĐV cố định.")
+
+    def rename_slot(self, slot_id: str, alias: str):
+        with self.lock:
+            if slot_id in self.slots:
+                self.slots[slot_id]["alias"] = alias.strip()
+
+    @staticmethod
+    def _extract_part_hist(crop_hsv: np.ndarray) -> np.ndarray:
+        if crop_hsv.size == 0:
+            return np.zeros(20, dtype=np.float32)
+        h_hist = cv2.calcHist([crop_hsv], [0], None, [12], [0, 180]).flatten()
+        s_hist = cv2.calcHist([crop_hsv], [1], None, [4], [0, 256]).flatten()
+        v_hist = cv2.calcHist([crop_hsv], [2], None, [4], [0, 256]).flatten()
+        vec = np.concatenate([h_hist, s_hist, v_hist]).astype(np.float32)
+        norm = float(np.linalg.norm(vec))
+        return vec / norm if norm > 1e-6 else vec
+
+    def extract_appearance(self, frame: np.ndarray, bbox: tuple) -> np.ndarray:
+        """Trích xuất vân tay ngoại hình 3 vùng: Áo (45%) + Quần (25%) + Giày (30%)."""
+        h_img, w_img = frame.shape[:2]
+        x1, y1, x2, y2 = bbox
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w_img, x2), min(h_img, y2)
+        bw, bh = x2 - x1, y2 - y1
+        if bw < 6 or bh < 12:
+            return np.zeros(60, dtype=np.float32)
+
+        # Cắt 60% chiều rộng ở giữa để loại bỏ nền sân hai bên
+        mx1 = x1 + int(bw * 0.20)
+        mx2 = x2 - int(bw * 0.20)
+        if mx2 <= mx1:
+            mx1, mx2 = x1, x2
+
+        roi = frame[y1:y2, mx1:mx2]
+        if roi.size == 0:
+            return np.zeros(60, dtype=np.float32)
+
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        rh = hsv.shape[0]
+        upper = hsv[int(rh * 0.16):int(rh * 0.50), :]  # Áo thi đấu
+        lower = hsv[int(rh * 0.50):int(rh * 0.78), :]  # Quần / chân
+        shoes = hsv[int(rh * 0.78):int(rh * 0.98), :]  # Giày / bàn chân
+
+        f_up = self._extract_part_hist(upper) * 0.45
+        f_lo = self._extract_part_hist(lower) * 0.25
+        f_sh = self._extract_part_hist(shoes) * 0.30
+        feat = np.concatenate([f_up, f_lo, f_sh]).astype(np.float32)
+        norm = float(np.linalg.norm(feat))
+        return feat / norm if norm > 1e-6 else feat
+
+    def assign_ids(self, frame: np.ndarray, detections: List[dict]) -> List[dict]:
+        """Gán mã cố định (VDV-01..VDV-06) cho danh sách detection trong sân.
+        detections: list of {'bbox': (x1,y1,x2,y2), 'track_id': int, 'conf': float}"""
+        with self.lock:
+            self.frame_idx += 1
+            h_img, w_img = frame.shape[:2]
+            diag = max(1.0, float(np.hypot(w_img, h_img)))
+
+            # Chuẩn bị đặc trưng & vị trí bàn chân cho từng detection
+            enriched = []
+            for det in detections:
+                x1, y1, x2, y2 = det["bbox"]
+                feat = self.extract_appearance(frame, det["bbox"])
+                foot = ((x1 + x2) * 0.5, float(y2))
+                enriched.append({**det, "feat": feat, "foot": foot, "slot_id": None})
+
+            used_slots = set()
+
+            # Bước 1: Giữ nguyên mã cho các yolo_track_id đang được track liên tục
+            for item in enriched:
+                tid = item["track_id"]
+                if tid > 0 and tid in self.track_to_slot:
+                    sid = self.track_to_slot[tid]
+                    if sid in self.slots and sid not in used_slots:
+                        item["slot_id"] = sid
+                        used_slots.add(sid)
+
+            # Bước 2: Khớp 1-1 (Re-ID) cho các detection mới / vừa mất dấu với các slot đang vắng mặt
+            unassigned = [it for it in enriched if it["slot_id"] is None]
+            available_slots = [sid for sid in self.slots.keys() if sid not in used_slots]
+
+            if unassigned and available_slots:
+                pairs = []
+                for idx_u, item in enumerate(unassigned):
+                    for sid in available_slots:
+                        sdata = self.slots[sid]
+                        app_sim = float(np.dot(item["feat"], sdata["feat"]))
+                        dist_norm = float(np.hypot(
+                            item["foot"][0] - sdata["last_pos"][0],
+                            item["foot"][1] - sdata["last_pos"][1]
+                        )) / diag
+                        # Ưu tiên gần vị trí vừa biến mất trong ~45 frame (3 giây)
+                        age = self.frame_idx - sdata["last_seen"]
+                        spatial_sim = max(0.0, 1.0 - dist_norm * 2.5) if age <= 60 else max(0.0, 1.0 - dist_norm * 1.2)
+                        score = 0.72 * app_sim + 0.28 * spatial_sim
+                        pairs.append((score, idx_u, sid))
+
+                pairs.sort(key=lambda x: x[0], reverse=True)
+                matched_u = set()
+                for score, idx_u, sid in pairs:
+                    if idx_u in matched_u or sid in used_slots:
+                        continue
+                    # Nếu đã đủ số lượng slot tối đa -> bắt buộc tái sử dụng slot giống nhất;
+                    # Nếu chưa đủ -> chỉ tái sử dụng khi độ giống ngoại hình + vị trí >= 0.52
+                    if len(self.slots) >= self.max_slots or score >= 0.52:
+                        unassigned[idx_u]["slot_id"] = sid
+                        used_slots.add(sid)
+                        matched_u.add(idx_u)
+
+            # Bước 3: Nếu vẫn còn người chưa có mã và chưa chạm trần max_slots -> cấp mã cố định mới
+            for item in enriched:
+                if item["slot_id"] is None and len(self.slots) < self.max_slots:
+                    new_idx = len(self.slots)
+                    sid = f"VDV-{new_idx + 1:02d}"
+                    self.slots[sid] = {
+                        "feat": item["feat"].copy(),
+                        "last_pos": item["foot"],
+                        "last_seen": self.frame_idx,
+                        "alias": sid,
+                        "color": self.SLOT_COLORS[new_idx % len(self.SLOT_COLORS)],
+                    }
+                    item["slot_id"] = sid
+                    used_slots.add(sid)
+
+            # Bước 4: Cập nhật ánh xạ track_to_slot và EMA ngoại hình cho các mã đã khớp
+            results_out = []
+            for item in enriched:
+                sid = item["slot_id"]
+                if sid is None:
+                    continue
+                sdata = self.slots[sid]
+                if item["track_id"] > 0:
+                    self.track_to_slot[item["track_id"]] = sid
+                # Cập nhật hồ sơ ngoại hình mượt (EMA) khi detection rõ nét
+                if item["conf"] >= 0.50 and float(np.linalg.norm(item["feat"])) > 0.1:
+                    blended = 0.85 * sdata["feat"] + 0.15 * item["feat"]
+                    bnorm = float(np.linalg.norm(blended))
+                    if bnorm > 1e-6:
+                        sdata["feat"] = blended / bnorm
+                sdata["last_pos"] = item["foot"]
+                sdata["last_seen"] = self.frame_idx
+
+                results_out.append({
+                    "bbox": item["bbox"],
+                    "conf": item["conf"],
+                    "track_id": item["track_id"],
+                    "slot_id": sid,
+                    "label": sdata["alias"],
+                    "color": sdata["color"],
+                })
+            return results_out
+
+
+class SmartBallTracker:
+    """Bộ nhận diện & bám bóng rổ thông minh trong sân:
+    1) Lọc detection YOLO trong vùng sân + hình dạng tròn hợp lệ.
+    2) Dự phòng bắt bóng theo màu (Cam 5x5 / Vàng 3x3) trong cửa sổ cục bộ khi YOLO bỏ sót.
+    3) Nội suy quỹ đạo ngắn (Motion Coasting) khi bóng bị che khuất tạm thời 1-6 frame."""
+
+    def __init__(self, trail_len: int = 14):
+        self.trail = deque(maxlen=trail_len)
+        self.last_pos: Optional[tuple] = None   # (cx, cy, radius)
+        self.vel: tuple = (0.0, 0.0)            # (vx, vy) px/frame
+        self.missed_frames: int = 999
+        self.max_coast_frames: int = 6
+
+    def _is_valid_ball_region(self, cx: float, cy: float, w: int, h: int, court_mgr: Optional[CourtBoundaryManager]) -> bool:
+        if court_mgr is None:
+            return True
+        fx, fy = cx / max(1, w), cy / max(1, h)
+        # Loại bỏ bóng giả nằm trong vùng loại trừ đỏ (khán giả, quay phim, logo góc)
+        for ex1, ey1, ex2, ey2 in court_mgr.exclusion_zones:
+            if ex1 <= fx <= ex2 and ey1 <= fy <= ey2:
+                return False
+        # Bóng có thể bay cao lên tới bảng rổ nên cho phép nằm trong sân HOẶC phía trên sân (y >= 5%)
+        if court_mgr.is_in_court(cx, cy, w, h):
+            return True
+        poly = court_mgr.get_pixel_polygon(w, h)
+        if len(poly) >= 3:
+            min_x, max_x = int(poly[:, 0].min()), int(poly[:, 0].max())
+            max_y = int(poly[:, 1].max())
+            return (min_x - 30 <= cx <= max_x + 30) and (int(h * 0.04) <= cy <= max_y + 15)
+        return True
+
+    def _color_fallback_detect(self, frame: np.ndarray, court_mgr: Optional[CourtBoundaryManager]) -> Optional[tuple]:
+        """Tìm bóng dự phòng theo màu bóng rổ (Cam 5x5 / Vàng 3x3) trong cửa sổ cục bộ quanh vị trí dự đoán."""
+        h, w = frame.shape[:2]
+        if self.last_pos is not None and self.missed_frames <= 12:
+            pred_x = int(self.last_pos[0] + self.vel[0])
+            pred_y = int(self.last_pos[1] + self.vel[1])
+            pad = 75 + self.missed_frames * 14
+            rx1, ry1 = max(0, pred_x - pad), max(0, pred_y - pad)
+            rx2, ry2 = min(w, pred_x + pad), min(h, pred_y + pad)
+        else:
+            # Quét toàn vùng sân khi chưa khóa được bóng
+            rx1, ry1, rx2, ry2 = 0, int(h * 0.08), w, int(h * 0.96)
+
+        roi = frame[ry1:ry2, rx1:rx2]
+        if roi.size == 0:
+            return None
+
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        # Màu cam bóng rổ 5x5 + vàng đậm bóng FIBA 3x3
+        mask_orange = cv2.inRange(hsv, np.array([4, 115, 90]), np.array([22, 255, 255]))
+        mask_yellow = cv2.inRange(hsv, np.array([18, 130, 125]), np.array([34, 255, 255]))
+        mask = cv2.bitwise_or(mask_orange, mask_yellow)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        best = None
+        best_score = -1.0
+        for c in cnts:
+            area = cv2.contourArea(c)
+            if area < 55 or area > 2600:
+                continue
+            peri = cv2.arcLength(c, True)
+            if peri <= 0:
+                continue
+            circularity = 4.0 * np.pi * area / (peri * peri)
+            if circularity < 0.52:
+                continue
+            (cx_loc, cy_loc), rad = cv2.minEnclosingCircle(c)
+            if rad < 5 or rad > 28:
+                continue
+            cx, cy = cx_loc + rx1, cy_loc + ry1
+            if not self._is_valid_ball_region(cx, cy, w, h, court_mgr):
+                continue
+
+            score = circularity
+            if self.last_pos is not None:
+                dist = float(np.hypot(cx - (self.last_pos[0] + self.vel[0]), cy - (self.last_pos[1] + self.vel[1])))
+                score += max(0.0, 1.0 - dist / 160.0)
+            if score > best_score:
+                best_score = score
+                best = (int(cx), int(cy), int(max(7, rad)), 0.35)
+        return best
+
+    def update(self, frame: np.ndarray, yolo_ball_candidates: List[tuple],
+               court_mgr: Optional[CourtBoundaryManager] = None) -> dict:
+        """Trả về {'status': 'LOCKED'|'TRACKING'|'SEARCHING', 'pos': (cx,cy,r)|None, 'conf': float}"""
+        h, w = frame.shape[:2]
+        chosen = None
+
+        # 1. Chọn candidate tốt nhất từ YOLO (đã lọc vùng sân & tỷ lệ hình tròn)
+        valid_yolo = []
+        for x1, y1, x2, y2, conf in yolo_ball_candidates:
+            bw, bh = x2 - x1, y2 - y1
+            if bw < 6 or bh < 6 or bw > 95 or bh > 95:
+                continue
+            aspect = bw / max(1.0, float(bh))
+            if aspect < 0.55 or aspect > 1.80:
+                continue
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            if not self._is_valid_ball_region(cx, cy, w, h, court_mgr):
+                continue
+            rad = max(7, (bw + bh) // 4)
+            # Ưu tiên bóng gần vị trí dự đoán nhất + conf cao
+            score = conf
+            if self.last_pos is not None and self.missed_frames <= 10:
+                dist = float(np.hypot(cx - (self.last_pos[0] + self.vel[0]), cy - (self.last_pos[1] + self.vel[1])))
+                score += max(0.0, 0.5 - dist / 240.0)
+            valid_yolo.append((score, cx, cy, rad, conf))
+
+        if valid_yolo:
+            valid_yolo.sort(key=lambda t: t[0], reverse=True)
+            _, cx, cy, rad, conf = valid_yolo[0]
+            chosen = (cx, cy, rad, conf)
+        else:
+            # 2. Dự phòng bắt bóng bằng màu bóng rổ khi YOLO bỏ sót
+            chosen = self._color_fallback_detect(frame, court_mgr)
+
+        if chosen is not None:
+            cx, cy, rad, conf = chosen
+            if self.last_pos is not None and self.missed_frames <= 4:
+                vx = 0.65 * (cx - self.last_pos[0]) + 0.35 * self.vel[0]
+                vy = 0.65 * (cy - self.last_pos[1]) + 0.35 * self.vel[1]
+                self.vel = (float(np.clip(vx, -55, 55)), float(np.clip(vy, -55, 55)))
+            else:
+                self.vel = (0.0, 0.0)
+            self.last_pos = (cx, cy, rad)
+            self.missed_frames = 0
+            self.trail.append((cx, cy))
+            return {"status": "LOCKED", "pos": (cx, cy, rad), "conf": conf}
+
+        # 3. Quán tính dự đoán ngắn khi bóng bị che khuất 1..6 frame
+        self.missed_frames += 1
+        if self.last_pos is not None and self.missed_frames <= self.max_coast_frames:
+            nx = int(np.clip(self.last_pos[0] + self.vel[0], 0, w - 1))
+            ny = int(np.clip(self.last_pos[1] + self.vel[1], 0, h - 1))
+            self.vel = (self.vel[0] * 0.90, self.vel[1] * 0.90 + 0.7)  # ma sát + trọng lực nhẹ
+            self.last_pos = (nx, ny, self.last_pos[2])
+            self.trail.append((nx, ny))
+            return {"status": "TRACKING", "pos": (nx, ny, self.last_pos[2]), "conf": 0.0}
+
+        if len(self.trail) > 0:
+            self.trail.popleft()
+        return {"status": "SEARCHING", "pos": None, "conf": 0.0}
+
+
 class OBSVisionSystem:
     def __init__(self, obs_reader: AsyncOBSReader, engine: FIBABoxScoreEngine, gemini_mgr: GeminiFailoverManager):
         self.obs = obs_reader
@@ -504,7 +834,11 @@ class OBSVisionSystem:
         self.pool = ThreadPoolExecutor(max_workers=3)
         self.clip_queue = queue.Queue(maxsize=6)
         self.gemini_status = "Đang theo dõi luồng OBS..."
-        self.ball_trail = deque(maxlen=12)
+        self.ball_tracker = SmartBallTracker(trail_len=14)
+        self.ball_trail = self.ball_tracker.trail  # tương thích ngược
+
+        # Bộ gắn cố định mã VĐV theo thể thức (3x3: tối đa 6 mã, 5x5: tối đa 10 mã)
+        self.player_reid = PersistentPlayerReID(max_slots=self.engine.max_on_court * 2)
 
         # Trình quản lý ranh giới vạch sân thi đấu (Court Boundary Tracker)
         self.court_mgr = CourtBoundaryManager(match_format=self.engine.match_format)
@@ -566,28 +900,31 @@ class OBSVisionSystem:
         return [], []
 
     def _draw_hitboxes(self, frame: np.ndarray) -> tuple[np.ndarray, int]:
-        # Track cả người (cls 0) và quả bóng rổ (cls 32 - sports ball).
-        # Conf 0.18 cho phép bắt bóng nhỏ đang chuyển động nhanh mà không bị bỏ sót.
-        results = self.yolo_model.track(frame, persist=True, classes=[0, 32], conf=0.18, verbose=False)
-        player_count = 0
-        ball_detected = False
-        ball_data = None
+        # Lưu bản sạch chưa vẽ viền/chữ để Re-ID ngoại hình & nhận diện màu bóng không bị nhiễu
+        clean_frame = frame.copy()
 
+        # Track cả người (cls 0) và quả bóng rổ (cls 32 - sports ball).
+        # Conf 0.15 cho phép bắt bóng nhỏ đang bay nhanh; người vẫn lọc conf >= 0.35.
+        results = self.yolo_model.track(clean_frame, persist=True, classes=[0, 32], conf=0.15, verbose=False)
         h, w = frame.shape[:2]
         court_poly_pts = self.court_mgr.get_pixel_polygon(w, h)
 
-        # Vẽ viền ranh giới sân N-điểm (cyan) & các vùng loại trừ (đỏ mờ)
+        # Vẽ viền ranh giới sân N-điểm (vàng FIBA) & các vùng loại trừ (đỏ mờ)
         if self.use_court_roi:
             if len(court_poly_pts) >= 3:
-                cv2.polylines(frame, [court_poly_pts], isClosed=True, color=(0, 220, 255), thickness=2, lineType=cv2.LINE_AA)
+                cv2.polylines(frame, [court_poly_pts], isClosed=True, color=(94, 211, 244), thickness=2, lineType=cv2.LINE_AA)
                 for idx, (px, py) in enumerate(court_poly_pts):
-                    cv2.circle(frame, (int(px), int(py)), 4, (0, 255, 255), -1)
+                    cv2.circle(frame, (int(px), int(py)), 4, (94, 211, 244), -1)
                     cv2.putText(frame, f"P{idx + 1}", (int(px) + 5, int(py) - 4),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.36, (0, 240, 255), 1)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.36, (94, 211, 244), 1)
             for ex1, ey1, ex2, ey2 in self.court_mgr.get_pixel_exclusions(w, h):
-                cv2.rectangle(frame, (ex1, ey1), (ex2, ey2), (50, 50, 240), 2)
+                cv2.rectangle(frame, (ex1, ey1), (ex2, ey2), (70, 57, 230), 2)
                 cv2.putText(frame, "NO-TRACK", (ex1 + 4, ey1 + 14),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (60, 80, 255), 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (80, 80, 255), 1)
+
+        in_court_dets = []
+        outside_dets = []
+        yolo_ball_candidates = []
 
         if results and len(results) > 0 and results[0].boxes is not None:
             for box in results[0].boxes:
@@ -597,7 +934,6 @@ class OBSVisionSystem:
                 track_id = int(box.id[0]) if box.id is not None else 0
 
                 if cls_id == 0 and conf >= 0.35:
-                    # Kiểm tra vị trí bàn chân ((x1+x2)//2, y2) có nằm trong ranh giới sân không
                     foot_x = (x1 + x2) // 2
                     foot_y = y2
                     is_in_court = True
@@ -605,64 +941,89 @@ class OBSVisionSystem:
                         is_in_court = self.court_mgr.is_in_court(foot_x, foot_y, w, h)
 
                     if is_in_court:
-                        player_count += 1
-                        color = (0, 255, 128)
-                        label = f"Player #{track_id} ({conf:.2f})"
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
-                        cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
-                        cv2.putText(frame, label, (x1 + 2, y1 - 3),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 1)
+                        in_court_dets.append({"bbox": (x1, y1, x2, y2), "track_id": track_id, "conf": conf})
                     else:
-                        # Người ngoài sân (cameraman ngồi bệt, VĐV dự bị, HLV, khán giả)
-                        dim_color = (80, 85, 95)
-                        label = f"Outside #{track_id}"
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), dim_color, 1)
-                        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
-                        cv2.rectangle(frame, (x1, y1 - th - 4), (x1 + tw + 4, y1), dim_color, -1)
-                        cv2.putText(frame, label, (x1 + 2, y1 - 2),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (200, 205, 215), 1)
+                        outside_dets.append(((x1, y1, x2, y2), track_id))
 
-                elif cls_id == 32 and conf >= 0.18:
-                    ball_detected = True
-                    ball_data = (x1, y1, x2, y2, conf)
+                elif cls_id == 32 and conf >= 0.15:
+                    yolo_ball_candidates.append((x1, y1, x2, y2, conf))
 
-        # Xử lý tracking & vẽ vệt di chuyển quả bóng (Ball Trail Tracking)
-        if ball_detected and ball_data is not None:
-            bx1, by1, bx2, by2, bconf = ball_data
-            bcx, bcy = (bx1 + bx2) // 2, (by1 + by2) // 2
-            br = max(8, (bx2 - bx1) // 2)
-            self.ball_trail.append((bcx, bcy))
+        # Gán mã VĐV cố định (VDV-01..VDV-06) bằng Re-ID đa vùng (Áo + Quần + Giày)
+        assigned_players = self.player_reid.assign_ids(clean_frame, in_court_dets)
+        player_count = len(assigned_players)
 
-            # Vẽ vệt đuôi di chuyển của bóng (Motion Trail)
-            trail_len = len(self.ball_trail)
-            for i in range(1, trail_len):
-                thick = max(1, int((i / trail_len) * 4))
-                cv2.line(frame, self.ball_trail[i - 1], self.ball_trail[i], (0, 140, 255), thick)
+        # Vẽ người ngoài sân (mờ, không tính vào số lượng VĐV)
+        for (x1, y1, x2, y2), tid in outside_dets:
+            dim_color = (90, 95, 105)
+            label = f"Outside #{tid}"
+            cv2.rectangle(frame, (x1, y1), (x2, y2), dim_color, 1)
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+            cv2.rectangle(frame, (x1, y1 - th - 4), (x1 + tw + 4, y1), dim_color, -1)
+            cv2.putText(frame, label, (x1 + 2, y1 - 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 205, 215), 1)
 
-            # Vẽ tâm ngắm vòng tròn quanh bóng
-            cv2.circle(frame, (bcx, bcy), br + 4, (0, 140, 255), 2)
+        # Cập nhật SmartBallTracker (YOLO + lọc sân + fallback màu bóng + nội suy quỹ đạo)
+        ball_info = self.ball_tracker.update(
+            clean_frame, yolo_ball_candidates, self.court_mgr if self.use_court_roi else None
+        )
+        ball_status = ball_info["status"]
+        ball_pos = ball_info["pos"]
+        ball_holder = None
+
+        # Xác định VĐV gần bóng nhất (đang cầm / kiểm soát bóng)
+        if ball_pos is not None and assigned_players:
+            bcx, bcy, _ = ball_pos
+            min_d = 95.0
+            for pl in assigned_players:
+                px1, py1, px2, py2 = pl["bbox"]
+                pcx, pcy = (px1 + px2) * 0.5, py1 + (py2 - py1) * 0.45
+                d = float(np.hypot(bcx - pcx, bcy - pcy))
+                if d < min_d:
+                    min_d = d
+                    ball_holder = pl["slot_id"]
+
+        # Vẽ VĐV trong sân với mã cố định
+        for pl in assigned_players:
+            x1, y1, x2, y2 = pl["bbox"]
+            color = pl["color"]
+            is_holder = (ball_holder == pl["slot_id"])
+            tag_suffix = " [BALL]" if is_holder else ""
+            label = f"{pl['label']}{tag_suffix} ({pl['conf']:.2f})"
+            thick = 3 if is_holder else 2
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thick)
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.50, 1)
+            cv2.rectangle(frame, (x1, max(0, y1 - th - 6)), (x1 + tw + 6, y1), color, -1)
+            cv2.putText(frame, label, (x1 + 3, max(12, y1 - 3)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (8, 35, 62), 1)
+
+        # Vẽ vệt di chuyển & tâm ngắm quả bóng rổ
+        trail = self.ball_tracker.trail
+        trail_len = len(trail)
+        for i in range(1, trail_len):
+            thick = max(1, int((i / trail_len) * 4))
+            t_color = (0, 165, 255) if ball_status == "LOCKED" else (0, 215, 255)
+            cv2.line(frame, trail[i - 1], trail[i], t_color, thick)
+
+        if ball_pos is not None:
+            bcx, bcy, br = ball_pos
+            ring_color = (0, 140, 255) if ball_status == "LOCKED" else (0, 220, 255)
+            cv2.circle(frame, (bcx, bcy), br + 4, ring_color, 2)
             cv2.circle(frame, (bcx, bcy), 3, (0, 255, 255), -1)
-            cv2.putText(frame, f"BALL {bconf:.2f}", (bcx - 24, by1 - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 220, 255), 1)
-        elif len(self.ball_trail) > 0:
-            # Khi bóng khuất tạm thời (motion blur), làm mờ dần vệt cũ
-            self.ball_trail.popleft()
-            trail_len = len(self.ball_trail)
-            for i in range(1, trail_len):
-                thick = max(1, int((i / trail_len) * 3))
-                cv2.line(frame, self.ball_trail[i - 1], self.ball_trail[i], (0, 100, 220), thick)
+            b_txt = f"BALL {ball_info['conf']:.2f}" if ball_status == "LOCKED" else "BALL (EST)"
+            cv2.putText(frame, b_txt, (bcx - 28, max(14, bcy - br - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.46, ring_color, 1)
 
         # Thanh trạng thái HUD chuẩn không bị lỗi dấu ? trong OpenCV
         import unicodedata
         clean_status = "".join(c for c in unicodedata.normalize('NFKD', self.gemini_status) if not unicodedata.combining(c)).replace('đ', 'd').replace('Đ', 'D')
-        ball_label = "LOCKED" if ball_detected else "SEARCHING"
+        holder_txt = f" | Holder: {ball_holder}" if ball_holder else ""
 
-        cv2.rectangle(frame, (10, 10), (660, 82), (15, 17, 23), -1)
-        cv2.putText(frame, f"OBS LIVE | On-Court: {player_count} ({self.engine.match_format}) | Ball: {ball_label} | {self.gemini.active_label}", (20, 36),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.54, (0, 255, 200), 2)
-        cv2.putText(frame, f"AI: {clean_status[:60]}", (20, 66),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (210, 215, 225), 1)
+        cv2.rectangle(frame, (10, 10), (740, 82), (62, 35, 8), -1)
+        cv2.rectangle(frame, (10, 10), (740, 82), (94, 211, 244), 1)
+        cv2.putText(frame, f"OBS LIVE | On-Court: {player_count}/{self.player_reid.max_slots} ({self.engine.match_format}) | Ball: {ball_status}{holder_txt}", (20, 36),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (94, 211, 244), 2)
+        cv2.putText(frame, f"AI ({self.gemini.active_label}): {clean_status[:58]}", (20, 66),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.46, (235, 240, 248), 1)
         return frame, player_count
 
     def _analyze_clip(self, clip_path: str) -> Optional[ClipAnalysisResult]:
@@ -1891,6 +2252,10 @@ def index():
                             <span>Tự động phân tích pha bóng & cập nhật biên bản mỗi 2 giây</span>
                         </div>
                         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button class="btn-btc btn-white btn-sm" onclick="resetPlayerIDs()" title="Đặt lại toàn bộ mã VDV-01..06 khi sang trận mới">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+                                <span>Đặt lại mã VĐV</span>
+                            </button>
                             <button id="btnCalibToggle" class="btn-btc btn-white btn-sm" onclick="toggleCourtCalib()">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                                 <span>Căn chỉnh vạch sân</span>
@@ -2249,6 +2614,18 @@ def index():
                 drawCalibCanvas();
                 saveCourtConfig();
             }
+
+            function resetPlayerIDs() {
+                fetch('/api/reset_player_ids', { method: 'POST' })
+                    .then(r => r.json())
+                    .then(() => {
+                        const status = document.getElementById('calibStatus');
+                        if (status) {
+                            status.innerText = 'Đã đặt lại toàn bộ mã VĐV cố định!';
+                            setTimeout(() => { status.innerText = ''; }, 3000);
+                        }
+                    }).catch(e => console.error(e));
+            }
         </script>
     </body>
     </html>
@@ -2292,6 +2669,13 @@ def set_court_polygon():
             "exclusion_zones": vision_system.court_mgr.exclusion_zones
         })
     return jsonify({"status": "error", "message": "Invalid config"}), 400
+
+@app.route("/api/reset_player_ids", methods=["POST"])
+def reset_player_ids():
+    if vision_system and hasattr(vision_system, "player_reid"):
+        vision_system.player_reid.reset()
+        return jsonify({"status": "ok"})
+    return jsonify({"status": "error"}), 400
 
 
 # =====================================================================
