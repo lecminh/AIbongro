@@ -794,10 +794,10 @@ def generate_boxscore_tables_html(engine: FIBABoxScoreEngine) -> str:
             tot_sec = 0.0
 
             for no, p in sorted(team["players"].items()):
-                prefix = "<span class='star-badge'>★</span> " if p.is_starter else "<span class='bench-dot'>•</span> "
-                cap = " <span class='cap-badge'>C</span>" if p.is_captain else ""
+                prefix = "<span class='star-badge' title='Đội hình xuất phát'>★</span> " if p.is_starter else "<span class='bench-dot' title='Dự bị'>•</span> "
+                cap = " <span class='cap-badge'>ĐỘI TRƯỞNG</span>" if p.is_captain else ""
                 if p.min_formatted == "DNP":
-                    rows += f"<tr class='dnp-row'><td>{prefix}{p.no}</td><td class='left'>{p.name}{cap}</td><td colspan='19' class='left dnp-label'>DNP - Không thi đấu</td></tr>"
+                    rows += f"<tr class='dnp-row'><td class='col-no'>{prefix}<b>#{p.no}</b></td><td class='left col-name'>{p.name}{cap}</td><td colspan='19' class='left dnp-label'>Không thi đấu (DNP)</td></tr>"
                     continue
 
                 tot_sec += p.seconds_played
@@ -809,7 +809,6 @@ def generate_boxscore_tables_html(engine: FIBABoxScoreEngine) -> str:
                 tot_as += p.assists; tot_to += p.turnovers; tot_st += p.steals; tot_bs += p.blocks
                 tot_pf += p.pf; tot_fd += p.fd; tot_pts += p.pts
 
-                # Định dạng màu cho +/-
                 pm_cls = "pm-pos" if p.plus_minus > 0 else ("pm-neg" if p.plus_minus < 0 else "pm-zero")
                 pm_sign = "+" if p.plus_minus > 0 else ""
 
@@ -836,47 +835,47 @@ def generate_boxscore_tables_html(engine: FIBABoxScoreEngine) -> str:
             tot_pm_sign = "+" if pm > 0 else ""
 
             return f"""
-            <div class="team-section">
+            <div class="btc-card team-section">
                 <div class="team-header-bar">
                     <div class="team-title-wrap">
                         <span class="team-badge-pill">{code}</span>
                         <span class="team-header-name">{team['name']}</span>
                     </div>
-                    <div class="team-color-indicator">Màu áo: <b>{team['color']}</b></div>
+                    <div class="team-color-indicator">Màu áo thi đấu: <b>{team['color']}</b></div>
                 </div>
                 <div class="table-responsive">
                     <table class="fiba-table">
                         <thead>
                             <tr class="th-group">
-                                <th rowspan="2" class="col-no">No</th>
-                                <th rowspan="2" class="left col-name">Cầu thủ</th>
-                                <th rowspan="2" class="col-min">Min</th>
-                                <th colspan="2">Field Goals</th>
-                                <th colspan="2">2 Points</th>
-                                <th colspan="2">3 Points</th>
-                                <th colspan="2">Free Throws</th>
-                                <th colspan="3">Rebounds</th>
-                                <th rowspan="2">AS</th>
-                                <th rowspan="2">TO</th>
-                                <th rowspan="2">ST</th>
-                                <th rowspan="2">BS</th>
-                                <th colspan="2">Fouls</th>
+                                <th rowspan="2" class="col-no">Số áo</th>
+                                <th rowspan="2" class="left col-name">Vận động viên</th>
+                                <th rowspan="2" class="col-min">Phút</th>
+                                <th colspan="2">Ném rổ (FG)</th>
+                                <th colspan="2">2 Điểm</th>
+                                <th colspan="2">3 Điểm</th>
+                                <th colspan="2">Ném phạt</th>
+                                <th colspan="3">Bắt bóng (REB)</th>
+                                <th rowspan="2" title="Kiến tạo">KT</th>
+                                <th rowspan="2" title="Mất bóng">MB</th>
+                                <th rowspan="2" title="Cướp bóng">CB</th>
+                                <th rowspan="2" title="Chắn bóng">CH</th>
+                                <th colspan="2">Phạm lỗi</th>
                                 <th rowspan="2">+/-</th>
-                                <th rowspan="2" class="col-pts">PTS</th>
+                                <th rowspan="2" class="col-pts">Điểm</th>
                             </tr>
                             <tr class="th-sub">
-                                <th>M/A</th><th>%</th>
-                                <th>M/A</th><th>%</th>
-                                <th>M/A</th><th>%</th>
-                                <th>M/A</th><th>%</th>
-                                <th>OR</th><th>DR</th><th>TOT</th>
-                                <th>PF</th><th>FD</th>
+                                <th title="Trúng / Tổng lần ném">T/N</th><th>%</th>
+                                <th title="Trúng / Tổng lần ném">T/N</th><th>%</th>
+                                <th title="Trúng / Tổng lần ném">T/N</th><th>%</th>
+                                <th title="Trúng / Tổng lần ném">T/N</th><th>%</th>
+                                <th title="Bắt bóng tấn công">TC</th><th title="Bắt bóng phòng thủ">PT</th><th>Tổng</th>
+                                <th title="Lỗi cá nhân">CN</th><th title="Bị phạm lỗi">BL</th>
                             </tr>
                         </thead>
                         <tbody>
                             {rows}
                             <tr class="totals-row">
-                                <td colspan="2" class="left"><b>TỔNG CỘNG</b></td>
+                                <td colspan="2" class="left"><b>TỔNG CỘNG ĐỘI {code}</b></td>
                                 <td class="col-min">{tot_min}</td>
                                 <td>{tot_fg_m}/{tot_fg_a}</td><td class="col-pct">{PlayerStats.calc_pct(tot_fg_m, tot_fg_a)}%</td>
                                 <td>{tot_2p_m}/{tot_2p_a}</td><td class="col-pct">{PlayerStats.calc_pct(tot_2p_m, tot_2p_a)}%</td>
@@ -899,82 +898,86 @@ def generate_boxscore_tables_html(engine: FIBABoxScoreEngine) -> str:
 
         def fmt_paint(adv):
             pct = PlayerStats.calc_pct(adv["pts_in_paint_m"], adv["pts_in_paint_a"])
-            return f"{adv['pts_in_paint_pts']} pts ({adv['pts_in_paint_m']}/{adv['pts_in_paint_a']}) {pct}%"
+            return f"<b>{adv['pts_in_paint_pts']}</b> điểm <span class='score-sub'>({adv['pts_in_paint_m']}/{adv['pts_in_paint_a']} · {pct}%)</span>"
 
         def fmt_time(sec):
             return f"{int(sec // 60):02d}:{int(sec % 60):02d}"
 
         return f"""
-        <!-- SCOREBOARD BROADCAST BANNER -->
-        <div class="score-banner-card">
-            <div class="banner-top-meta">
-                <span class="live-pill"><span class="pulse-dot"></span> FIBA LIVE {engine.match_format.upper()} TRACKER</span>
-                <span class="banner-sub-text">BẢNG ĐIỂM TRỰC TIẾP TỪ OBS VISION AI</span>
+        <!-- BẢNG TỶ SỐ TRỰC TIẾP (HERO BANNER PHONG CÁCH BTCGIAIDAU.ID.VN) -->
+        <section id="section-scoreboard" class="hero-score-card">
+            <div class="hero-top-row">
+                <span class="hero-tag-pill">BTC GIẢI ĐẤU · THỐNG KÊ BÓNG RỔ {engine.match_format.upper()} TRỰC TIẾP</span>
+                <span class="hero-live-badge" role="status" aria-atomic="true">
+                    <span class="live-dot"></span> ĐANG GHI NHẬN TỪ OBS AI
+                </span>
             </div>
             <div class="scoreboard-grid">
                 <div class="team-side team-side-a">
                     <div class="team-meta-box">
                         <span class="team-code-tag">{c1}</span>
                         <div class="team-full-name">{t1['name']}</div>
-                        <div class="team-jersey-tag">Áo: {t1['color']}</div>
+                        <div class="team-jersey-tag">Trang phục: {t1['color']}</div>
                     </div>
                     <div class="score-digit">{t1['score']}</div>
                 </div>
                 <div class="score-center-divider">
-                    <div class="vs-text">VS</div>
-                    <div class="lead-change-badge">Lead Changes: {engine.lead_changes}</div>
+                    <div class="vs-box">VS</div>
+                    <div class="lead-change-badge">Đổi dẫn: {engine.lead_changes} · Hòa: {engine.times_tied}</div>
                 </div>
                 <div class="team-side team-side-b">
                     <div class="score-digit">{t2['score']}</div>
                     <div class="team-meta-box meta-right">
                         <span class="team-code-tag">{c2}</span>
                         <div class="team-full-name">{t2['name']}</div>
-                        <div class="team-jersey-tag">Áo: {t2['color']}</div>
+                        <div class="team-jersey-tag">Trang phục: {t2['color']}</div>
                     </div>
                 </div>
             </div>
-        </div>
+        </section>
 
-        <!-- TEAM TABLES -->
-        {render_team(c1)}
-        {render_team(c2)}
+        <!-- BIÊN BẢN THỐNG KÊ CHI TIẾT 2 ĐỘI -->
+        <section id="section-boxscore" class="boxscore-stack">
+            {render_team(c1)}
+            {render_team(c2)}
+        </section>
 
-        <!-- ADVANCED STATS & GAME FLOW -->
-        <div class="summary-grid">
-            <div class="summary-card">
+        <!-- CHỈ SỐ CHUYÊN SÂU & DIỄN BIẾN TRẬN ĐẤU -->
+        <section id="section-summary" class="summary-grid">
+            <div class="btc-card summary-card">
                 <div class="card-header-bar">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
-                    <span>CHỈ SỐ NÂNG CAO (ADVANCED STATS)</span>
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>
+                    <span>CHỈ SỐ CHUYÊN SÂU ĐỘI BÓNG</span>
                 </div>
                 <table class="summary-table">
-                    <thead><tr><th class="left">Hạng mục</th><th>{c1}</th><th>{c2}</th></tr></thead>
+                    <thead><tr><th class="left">Hạng mục thống kê</th><th>{c1}</th><th>{c2}</th></tr></thead>
                     <tbody>
-                        <tr><td class="left">Points from Turnovers</td><td><b>{a1['pts_from_to']}</b></td><td><b>{a2['pts_from_to']}</b></td></tr>
-                        <tr><td class="left">Points in the Paint</td><td>{fmt_paint(a1)}</td><td>{fmt_paint(a2)}</td></tr>
-                        <tr><td class="left">Second Chance Points</td><td><b>{a1['second_chance_pts']}</b></td><td><b>{a2['second_chance_pts']}</b></td></tr>
-                        <tr><td class="left">Fast Break Points</td><td><b>{a1['fast_break_pts']}</b></td><td><b>{a2['fast_break_pts']}</b></td></tr>
-                        <tr><td class="left">Bench Points</td><td><b>{a1['bench_pts']}</b></td><td><b>{a2['bench_pts']}</b></td></tr>
+                        <tr><td class="left">Điểm từ mất bóng đối phương</td><td><b>{a1['pts_from_to']}</b></td><td><b>{a2['pts_from_to']}</b></td></tr>
+                        <tr><td class="left">Điểm trong khu vực hình thang</td><td>{fmt_paint(a1)}</td><td>{fmt_paint(a2)}</td></tr>
+                        <tr><td class="left">Điểm cơ hội hai (sau OREB)</td><td><b>{a1['second_chance_pts']}</b></td><td><b>{a2['second_chance_pts']}</b></td></tr>
+                        <tr><td class="left">Điểm phản công nhanh</td><td><b>{a1['fast_break_pts']}</b></td><td><b>{a2['fast_break_pts']}</b></td></tr>
+                        <tr><td class="left">Điểm từ vận động viên dự bị</td><td><b>{a1['bench_pts']}</b></td><td><b>{a2['bench_pts']}</b></td></tr>
                     </tbody>
                 </table>
             </div>
 
-            <div class="summary-card">
+            <div class="btc-card summary-card">
                 <div class="card-header-bar">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                    <span>DIỄN BIẾN TRẬN ĐẤU (GAME FLOW)</span>
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    <span>DIỄN BIẾN & THẾ TRẬN</span>
                 </div>
                 <table class="summary-table">
-                    <thead><tr><th class="left">Chỉ số</th><th>{c1}</th><th>{c2}</th></tr></thead>
+                    <thead><tr><th class="left">Chỉ số diễn biến</th><th>{c1}</th><th>{c2}</th></tr></thead>
                     <tbody>
-                        <tr><td class="left">Biggest Lead</td><td><b>{a1['biggest_lead']}</b> <span class="score-sub">({a1['biggest_lead_score']})</span></td><td><b>{a2['biggest_lead']}</b> <span class="score-sub">({a2['biggest_lead_score']})</span></td></tr>
-                        <tr><td class="left">Scoring Run lớn nhất</td><td><b>{a1['biggest_run']}</b> pts <span class="score-sub">({a1['biggest_run_score']})</span></td><td><b>{a2['biggest_run']}</b> pts <span class="score-sub">({a2['biggest_run_score']})</span></td></tr>
-                        <tr><td class="left">Số lần đổi dẫn (Lead Changes)</td><td colspan="2" class="center-highlight">{engine.lead_changes} lần</td></tr>
-                        <tr><td class="left">Số lần hòa điểm (Times Tied)</td><td colspan="2" class="center-highlight">{engine.times_tied} lần</td></tr>
-                        <tr><td class="left">Thời gian dẫn điểm</td><td><b>{fmt_time(a1['time_with_lead_sec'])}</b></td><td><b>{fmt_time(a2['time_with_lead_sec'])}</b></td></tr>
+                        <tr><td class="left">Cách biệt điểm lớn nhất</td><td><b>{a1['biggest_lead']}</b> <span class="score-sub">({a1['biggest_lead_score']})</span></td><td><b>{a2['biggest_lead']}</b> <span class="score-sub">({a2['biggest_lead_score']})</span></td></tr>
+                        <tr><td class="left">Chuỗi ghi điểm liên tiếp cao nhất</td><td><b>{a1['biggest_run']}</b> điểm <span class="score-sub">({a1['biggest_run_score']})</span></td><td><b>{a2['biggest_run']}</b> điểm <span class="score-sub">({a2['biggest_run_score']})</span></td></tr>
+                        <tr><td class="left">Số lần đổi ngôi dẫn điểm</td><td colspan="2" class="center-highlight">{engine.lead_changes} lần</td></tr>
+                        <tr><td class="left">Số lần tỷ số hòa nhau</td><td colspan="2" class="center-highlight">{engine.times_tied} lần</td></tr>
+                        <tr><td class="left">Tổng thời gian dẫn trước</td><td><b>{fmt_time(a1['time_with_lead_sec'])}</b></td><td><b>{fmt_time(a2['time_with_lead_sec'])}</b></td></tr>
                     </tbody>
                 </table>
             </div>
-        </div>
+        </section>
         """
 
 @app.route("/")
@@ -985,195 +988,471 @@ def index():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>FIBA Box Score & OBS Live AI Tracking</title>
+        <title>BTC Giải Đấu · Hệ Thống Thống Kê Bóng Rổ Trực Tiếp AI</title>
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=Chakra+Petch:wght@500;600;700;800&family=Orbitron:wght@700;800;900&display=swap" rel="stylesheet">
         <style>
             :root {
-                --bg-main: #0a0d14;
-                --bg-card: #121824;
-                --bg-card-subtle: #182030;
-                --border-color: rgba(255, 255, 255, 0.08);
-                --text-main: #f1f5f9;
-                --text-muted: #94a3b8;
-                --accent-amber: #f59e0b;
-                --accent-emerald: #10b981;
-                --accent-rose: #f43f5e;
-                --accent-cyan: #06b6d4;
-                --accent-blue: #3b82f6;
+                --primary: #0d3b66;
+                --primary-deep: #08233e;
+                --primary-hover: #154e85;
+                --primary-light: #e8f1f8;
+                --primary-pixel: #0a2a4a;
+                --accent: #faf0ca;
+                --accent-yellow: #f4d35e;
+                --accent-soft: #fdfbf2;
+                --gold: #f4d35e;
+                --coral: #ee964b;
+                --cyan: #38bdf8;
+                --ink: #08233e;
+                --ink-secondary: #1e293b;
+                --muted: #64748b;
+                --line: #cbd5e1;
+                --line-strong: #08233e;
+                --bg: #f4f6fa;
+                --card-bg: #ffffff;
+                --success: #10b981;
+                --success-light: #ecfdf5;
+                --danger: #e63946;
+                --danger-light: #fff5f5;
+                --px-border: 2px solid #08233e;
+                --px-border-thick: 3px solid #08233e;
+                --px-shadow-sm: 2px 2px 0px #08233e;
+                --px-shadow: 3px 3px 0px #08233e;
+                --px-shadow-lg: 5px 5px 0px #08233e;
             }
 
             * { box-sizing: border-box; }
+            html { scroll-behavior: smooth; }
+
             body {
-                font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-                font-size: 13px;
                 margin: 0;
-                padding: 20px;
-                background: var(--bg-main);
-                color: var(--text-main);
+                padding: 0;
+                font-family: "Be Vietnam Pro", system-ui, -apple-system, sans-serif;
+                color: var(--ink);
+                background-color: var(--bg);
+                background-image:
+                    linear-gradient(to right, rgba(13, 59, 102, 0.055) 1px, transparent 1px),
+                    linear-gradient(to bottom, rgba(13, 59, 102, 0.055) 1px, transparent 1px);
+                background-size: 24px 24px;
+                line-height: 1.5;
                 -webkit-font-smoothing: antialiased;
             }
 
-            /* CONTAINER WRAPPER */
-            .main-shell {
-                max-width: 1280px;
-                margin: 0 auto;
+            /* LAYOUT SHELL: SIDEBAR + WORKSPACE (BTCGIAIDAU.ID.VN STYLE) */
+            .app-shell {
+                display: flex;
+                min-height: 100vh;
+            }
+
+            /* SIDEBAR TRÁI */
+            .sidebar {
+                width: 236px;
+                flex-shrink: 0;
+                background: var(--card-bg);
+                border-right: var(--px-border);
                 display: flex;
                 flex-direction: column;
-                gap: 20px;
+                position: sticky;
+                top: 0;
+                height: 100vh;
+                z-index: 20;
             }
 
-            /* OBS CAM CARD */
-            .cam-card {
-                background: var(--bg-card);
-                border: 1px solid var(--border-color);
-                border-radius: 12px;
-                overflow: hidden;
-                box-shadow: 0 10px 30px -10px rgba(0,0,0,0.6);
+            .brand-box {
+                padding: 18px 18px 16px;
+                border-bottom: 1px solid var(--line);
+                display: flex;
+                align-items: center;
+                gap: 10px;
             }
 
+            .brand-logo {
+                width: 34px;
+                height: 34px;
+                background: var(--primary);
+                border: var(--px-border);
+                box-shadow: var(--px-shadow-sm);
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: var(--gold);
+                flex-shrink: 0;
+            }
+
+            .brand-title {
+                font-family: "Chakra Petch", sans-serif;
+                font-weight: 800;
+                font-size: 15px;
+                letter-spacing: 0.4px;
+                color: var(--primary);
+                line-height: 1.15;
+            }
+
+            .brand-sub {
+                font-size: 10.5px;
+                font-weight: 600;
+                color: var(--muted);
+                letter-spacing: 0.4px;
+                text-transform: uppercase;
+            }
+
+            .nav-group {
+                padding: 18px 14px;
+                flex: 1;
+            }
+
+            .nav-section-label {
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                color: var(--muted);
+                text-transform: uppercase;
+                padding: 0 8px 10px;
+            }
+
+            .nav-link {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 10px 10px;
+                margin-bottom: 6px;
+                color: var(--ink-secondary);
+                text-decoration: none;
+                font-size: 13px;
+                font-weight: 600;
+                border: 2px solid transparent;
+                transition: background-color 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+            }
+
+            .nav-link:hover, .nav-link:focus-visible {
+                background: var(--primary-light);
+                border-color: var(--primary-deep);
+                color: var(--primary-deep);
+                box-shadow: var(--px-shadow-sm);
+                outline: none;
+            }
+
+            .nav-link.active {
+                background: var(--primary);
+                color: #ffffff;
+                border-color: var(--primary-deep);
+                box-shadow: var(--px-shadow-sm);
+            }
+
+            .sidebar-footer {
+                padding: 14px 16px;
+                border-top: 1px solid var(--line);
+                font-size: 12px;
+                color: var(--muted);
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .status-dot {
+                width: 8px;
+                height: 8px;
+                background: var(--success);
+                display: inline-block;
+                flex-shrink: 0;
+            }
+
+            /* MAIN CONTENT AREA */
+            .main-content {
+                flex: 1;
+                min-width: 0;
+                padding: 22px 28px 36px;
+                max-width: 1380px;
+                margin: 0 auto;
+                width: 100%;
+            }
+
+            /* TOP PAGE HEADER */
+            .page-topbar {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-end;
+                gap: 16px;
+                padding-bottom: 14px;
+                margin-bottom: 22px;
+                border-bottom: 2px solid var(--primary-deep);
+                flex-wrap: wrap;
+            }
+
+            .topbar-kicker {
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 11px;
+                font-weight: 700;
+                letter-spacing: 1.2px;
+                text-transform: uppercase;
+                color: var(--muted);
+                margin-bottom: 2px;
+            }
+
+            .topbar-heading {
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 24px;
+                font-weight: 800;
+                color: var(--primary);
+                margin: 0;
+                line-height: 1.2;
+            }
+
+            .topbar-actions {
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }
+
+            /* PIXEL-BRUTALIST BUTTONS */
+            .btn-btc {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                padding: 9px 16px;
+                font-family: "Be Vietnam Pro", sans-serif;
+                font-size: 13px;
+                font-weight: 700;
+                border: var(--px-border);
+                border-radius: 0;
+                box-shadow: var(--px-shadow);
+                cursor: pointer;
+                transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.1s ease;
+                min-height: 40px;
+            }
+
+            .btn-btc:hover {
+                transform: translate(-1px, -1px);
+                box-shadow: 4px 4px 0px var(--primary-deep);
+            }
+
+            .btn-btc:active {
+                transform: translate(2px, 2px);
+                box-shadow: 1px 1px 0px var(--primary-deep);
+            }
+
+            .btn-btc:focus-visible {
+                outline: 3px solid var(--coral);
+                outline-offset: 2px;
+            }
+
+            .btn-primary {
+                background: var(--primary);
+                color: #ffffff;
+            }
+            .btn-primary:hover { background: var(--primary-hover); }
+
+            .btn-white {
+                background: var(--card-bg);
+                color: var(--primary-deep);
+            }
+            .btn-white:hover { background: var(--primary-light); }
+
+            .btn-gold {
+                background: var(--gold);
+                color: var(--primary-deep);
+            }
+            .btn-gold:hover { background: #f8de7a; }
+
+            .btn-danger {
+                background: var(--danger);
+                color: #ffffff;
+            }
+            .btn-danger:hover { background: #c92a37; }
+
+            .btn-danger-outline {
+                background: var(--danger-light);
+                color: var(--danger);
+                border-color: var(--danger);
+                box-shadow: 2px 2px 0px var(--danger);
+            }
+
+            .btn-sm {
+                padding: 6px 12px;
+                font-size: 12px;
+                min-height: 34px;
+                box-shadow: var(--px-shadow-sm);
+            }
+
+            /* CARD CHUẨN BTCGIAIDAU */
+            .btc-card {
+                background: var(--card-bg);
+                border: var(--px-border);
+                box-shadow: var(--px-shadow-lg);
+                margin-bottom: 22px;
+            }
+
+            /* CAMERA & TRACKING CARD */
             .cam-header {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                padding: 12px 18px;
-                background: #0f141f;
-                border-bottom: 1px solid var(--border-color);
+                gap: 12px;
+                padding: 12px 16px;
+                background: var(--primary-light);
+                border-bottom: var(--px-border);
+                flex-wrap: wrap;
             }
 
             .cam-title {
                 display: flex;
                 align-items: center;
-                gap: 8px;
-                font-family: 'Barlow Condensed', sans-serif;
-                font-size: 18px;
-                font-weight: 700;
-                letter-spacing: 0.8px;
-                color: #e2e8f0;
+                gap: 9px;
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 14px;
+                font-weight: 800;
+                color: var(--primary-deep);
+                letter-spacing: 0.4px;
+                text-transform: uppercase;
             }
 
             .cam-badges {
                 display: flex;
-                align-items: center;
                 gap: 8px;
+                flex-wrap: wrap;
             }
 
-            .badge {
-                padding: 4px 10px;
-                border-radius: 6px;
+            .tag-pixel {
+                font-family: "Chakra Petch", sans-serif;
                 font-size: 11px;
-                font-weight: 600;
-                letter-spacing: 0.5px;
+                font-weight: 700;
+                padding: 3px 9px;
+                border: 1.5px solid var(--primary-deep);
                 text-transform: uppercase;
+                letter-spacing: 0.5px;
             }
-            .badge-yolo { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
-            .badge-ai { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+
+            .tag-navy { background: var(--primary); color: #ffffff; }
+            .tag-gold { background: var(--accent); color: var(--primary-deep); }
 
             .obs-feed-container {
-                position: relative;
-                max-width: 960px;
-                margin: 16px auto;
-                background: #000;
-                border-radius: 8px;
-                overflow: hidden;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                box-shadow: 0 4px 20px rgba(0,0,0,0.8);
+                background: #08233e;
+                user-select: none;
+                border-bottom: var(--px-border);
+                display: flex;
+                justify-content: center;
+                align-items: center;
             }
 
-            .obs-feed-container img {
-                display: block;
-                width: 100%;
+            .feed-stage {
+                position: relative;
+                display: inline-block;
+                max-width: 100%;
+                line-height: 0;
+            }
+
+            .feed-stage img {
+                max-width: 100%;
+                max-height: 540px;
+                width: auto;
                 height: auto;
-                aspect-ratio: 16 / 9;
-                object-fit: contain;
+                display: block;
             }
 
             .cam-footer {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                padding: 12px 20px;
-                background: #0f141f;
-                border-top: 1px solid var(--border-color);
+                gap: 12px;
+                padding: 12px 16px;
+                background: var(--card-bg);
+                flex-wrap: wrap;
             }
 
             .sync-indicator {
                 display: flex;
                 align-items: center;
-                gap: 6px;
-                color: var(--text-muted);
-                font-size: 12px;
-            }
-
-            .pulse-dot {
-                display: inline-block;
-                width: 8px;
-                height: 8px;
-                border-radius: 50%;
-                background: #ef4444;
-                box-shadow: 0 0 8px #ef4444;
-                animation: pulse 1.5s infinite;
-            }
-
-            @keyframes pulse {
-                0% { opacity: 1; transform: scale(1); }
-                50% { opacity: 0.4; transform: scale(1.15); }
-                100% { opacity: 1; transform: scale(1); }
-            }
-
-            .btn-print {
-                display: inline-flex;
-                align-items: center;
                 gap: 8px;
-                padding: 8px 18px;
-                background: #2563eb;
-                color: #fff;
-                border: none;
-                border-radius: 6px;
-                font-family: 'Inter', sans-serif;
-                font-size: 12px;
+                font-size: 12.5px;
                 font-weight: 600;
-                cursor: pointer;
-                transition: all 0.2s;
-            }
-            .btn-print:hover { background: #1d4ed8; transform: translateY(-1px); }
-
-            /* SCORE BANNER */
-            .score-banner-card {
-                background: linear-gradient(135deg, #161e2e 0%, #101622 100%);
-                border: 1px solid var(--border-color);
-                border-radius: 12px;
-                padding: 18px 24px;
-                box-shadow: 0 8px 24px -8px rgba(0,0,0,0.5);
+                color: var(--muted);
             }
 
-            .banner-top-meta {
+            .calib-panel {
+                display: none;
+                background: var(--accent-soft);
+                border-top: var(--px-border);
+                padding: 14px 16px;
+            }
+
+            .calib-row {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-bottom: 10px;
+            }
+
+            .calib-hint {
+                font-size: 12.5px;
+                color: var(--ink-secondary);
+                background: #ffffff;
+                border: 1.5px solid var(--line);
+                padding: 8px 12px;
                 margin-bottom: 12px;
             }
 
-            .live-pill {
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-                background: rgba(239, 68, 68, 0.15);
-                color: #f87171;
-                border: 1px solid rgba(239, 68, 68, 0.3);
-                padding: 4px 10px;
-                border-radius: 20px;
-                font-family: 'Barlow Condensed', sans-serif;
-                font-size: 13px;
-                font-weight: 700;
-                letter-spacing: 0.8px;
+            /* HERO SCOREBOARD CARD (NAVY BANNER GIỐNG BTCGIAIDAU.ID.VN) */
+            .hero-score-card {
+                background: linear-gradient(135deg, #0d3b66 0%, #0a2a4a 100%);
+                color: #ffffff;
+                border: var(--px-border-thick);
+                box-shadow: var(--px-shadow-lg);
+                padding: 20px 24px 24px;
+                margin-bottom: 22px;
             }
 
-            .banner-sub-text {
-                font-size: 11px;
-                color: var(--text-muted);
-                letter-spacing: 0.5px;
+            .hero-top-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 18px;
+                flex-wrap: wrap;
+            }
+
+            .hero-tag-pill {
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 11.5px;
+                font-weight: 700;
+                letter-spacing: 0.9px;
+                color: var(--gold);
+                border: 1.5px solid var(--gold);
+                padding: 4px 12px;
+                background: rgba(8, 35, 62, 0.55);
+                text-transform: uppercase;
+            }
+
+            .hero-live-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 7px;
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 11.5px;
+                font-weight: 700;
+                color: #ecfdf5;
+                letter-spacing: 0.6px;
+            }
+
+            .live-dot {
+                width: 8px;
+                height: 8px;
+                background: #34d399;
+                display: inline-block;
+                animation: blinkDot 1.6s infinite;
+            }
+
+            @keyframes blinkDot {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.35; }
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                .live-dot { animation: none; }
             }
 
             .scoreboard-grid {
@@ -1186,97 +1465,96 @@ def index():
             .team-side {
                 display: flex;
                 align-items: center;
-                gap: 18px;
+                justify-content: space-between;
+                gap: 16px;
+                background: rgba(8, 35, 62, 0.45);
+                border: 2px solid rgba(250, 240, 202, 0.28);
+                padding: 14px 18px;
             }
-            .team-side-a { justify-content: flex-end; }
-            .team-side-b { justify-content: flex-start; }
 
             .team-meta-box {
                 display: flex;
                 flex-direction: column;
-                gap: 2px;
+                gap: 4px;
             }
-            .team-meta-box.meta-right { align-items: flex-start; text-align: left; }
-            .team-side-a .team-meta-box { align-items: flex-end; text-align: right; }
+            .team-meta-box.meta-right {
+                align-items: flex-end;
+                text-align: right;
+            }
 
             .team-code-tag {
                 display: inline-block;
-                background: rgba(255, 255, 255, 0.1);
-                color: #e2e8f0;
-                font-family: 'Barlow Condensed', sans-serif;
-                font-size: 12px;
-                font-weight: 700;
-                padding: 2px 8px;
-                border-radius: 4px;
                 width: fit-content;
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 2px 8px;
+                background: var(--gold);
+                color: var(--primary-deep);
+                letter-spacing: 0.8px;
             }
 
             .team-full-name {
-                font-family: 'Barlow Condensed', sans-serif;
-                font-size: 26px;
-                font-weight: 700;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 22px;
+                font-weight: 800;
                 color: #ffffff;
+                line-height: 1.15;
+                text-transform: uppercase;
             }
 
             .team-jersey-tag {
-                font-size: 11px;
-                color: var(--text-muted);
+                font-size: 12px;
+                color: #cbd5e1;
+                font-weight: 500;
             }
 
             .score-digit {
-                font-family: 'Barlow Condensed', sans-serif;
-                font-size: 64px;
-                font-weight: 800;
+                font-family: "Orbitron", "Chakra Petch", monospace;
+                font-size: 52px;
+                font-weight: 900;
+                color: var(--gold);
                 line-height: 1;
-                color: var(--accent-amber);
-                text-shadow: 0 0 20px rgba(245, 158, 11, 0.25);
                 font-variant-numeric: tabular-nums;
+                text-shadow: 3px 3px 0px #08233e;
             }
 
             .score-center-divider {
                 display: flex;
                 flex-direction: column;
                 align-items: center;
-                gap: 4px;
-                padding: 0 10px;
+                gap: 8px;
             }
 
-            .vs-text {
-                font-family: 'Barlow Condensed', sans-serif;
-                font-size: 22px;
-                font-weight: 800;
-                color: #64748b;
-                letter-spacing: 2px;
+            .vs-box {
+                font-family: "Orbitron", sans-serif;
+                font-size: 16px;
+                font-weight: 900;
+                color: var(--primary-deep);
+                background: var(--accent);
+                border: 2px solid var(--primary-deep);
+                padding: 6px 14px;
+                box-shadow: 3px 3px 0px #08233e;
             }
 
             .lead-change-badge {
-                font-size: 11px;
-                color: var(--text-muted);
-                background: rgba(255, 255, 255, 0.05);
-                padding: 2px 8px;
-                border-radius: 4px;
+                font-size: 11.5px;
+                font-weight: 600;
+                color: var(--accent);
                 white-space: nowrap;
             }
 
-            /* TEAM BOX SCORE SECTIONS */
-            .team-section {
-                background: var(--bg-card);
-                border: 1px solid var(--border-color);
-                border-radius: 12px;
-                overflow: hidden;
-                margin-top: 16px;
-                box-shadow: 0 4px 16px rgba(0,0,0,0.3);
-            }
-
+            /* TEAM BOX SCORE TABLES */
             .team-header-bar {
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                padding: 12px 18px;
-                background: #151d2c;
-                border-bottom: 1px solid var(--border-color);
+                padding: 12px 16px;
+                background: var(--primary);
+                color: #ffffff;
+                border-bottom: var(--px-border);
+                flex-wrap: wrap;
+                gap: 10px;
             }
 
             .team-title-wrap {
@@ -1286,259 +1564,398 @@ def index():
             }
 
             .team-badge-pill {
-                background: var(--accent-blue);
-                color: #fff;
-                font-family: 'Barlow Condensed', sans-serif;
-                font-size: 14px;
-                font-weight: 700;
-                padding: 3px 10px;
-                border-radius: 4px;
+                font-family: "Chakra Petch", sans-serif;
+                font-weight: 800;
+                font-size: 13px;
+                padding: 3px 9px;
+                background: var(--gold);
+                color: var(--primary-deep);
+                border: 1.5px solid var(--primary-deep);
             }
 
             .team-header-name {
-                font-family: 'Barlow Condensed', sans-serif;
-                font-size: 20px;
-                font-weight: 700;
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 17px;
+                font-weight: 800;
+                letter-spacing: 0.4px;
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
-                color: #fff;
             }
 
             .team-color-indicator {
-                font-size: 12px;
-                color: var(--text-muted);
+                font-size: 12.5px;
+                color: var(--accent);
             }
 
             .table-responsive {
-                overflow-x: auto;
                 width: 100%;
+                overflow-x: auto;
             }
 
             .fiba-table {
                 width: 100%;
                 border-collapse: collapse;
                 font-size: 12px;
-                text-align: center;
                 font-variant-numeric: tabular-nums;
             }
 
             .fiba-table th, .fiba-table td {
-                padding: 6px 8px;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+                padding: 7px 4px;
+                text-align: center;
+                border-bottom: 1px solid var(--line);
+                border-right: 1px solid #e2e8f0;
+                white-space: nowrap;
             }
 
             .fiba-table thead tr.th-group th {
-                background: #182234;
-                color: #94a3b8;
-                font-size: 11px;
+                background: var(--primary-pixel);
+                color: #ffffff;
+                font-family: "Chakra Petch", sans-serif;
                 font-weight: 700;
+                font-size: 11.5px;
                 text-transform: uppercase;
-                letter-spacing: 0.5px;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                letter-spacing: 0.3px;
+                border-color: rgba(255, 255, 255, 0.16);
             }
 
             .fiba-table thead tr.th-sub th {
-                background: #141c2b;
-                color: #64748b;
-                font-size: 10px;
-                font-weight: 600;
-                text-transform: uppercase;
+                background: var(--primary-light);
+                color: var(--primary-deep);
+                font-weight: 700;
+                font-size: 11px;
+                border-bottom: var(--px-border);
+            }
+
+            .fiba-table tbody tr:nth-child(even) {
+                background: #f8fafc;
             }
 
             .fiba-table tbody tr:hover {
-                background: rgba(255, 255, 255, 0.03);
+                background: var(--accent-soft);
             }
 
-            .fiba-table .left { text-align: left; }
-            .col-no { width: 50px; font-weight: 600; }
-            .col-name { min-width: 140px; font-weight: 600; color: #fff; }
-            .col-min { font-weight: 500; color: #cbd5e1; }
-            .col-pct { color: #94a3b8; font-size: 11px; }
-            .col-totreb { color: #38bdf8; }
-            .col-pts { font-size: 13px; color: var(--accent-amber); }
+            .left { text-align: left !important; padding-left: 12px !important; }
+            .col-no { min-width: 68px; font-weight: 700; color: var(--primary); }
+            .col-name { min-width: 155px; font-weight: 700; color: var(--ink); }
+            .col-min { font-weight: 600; color: var(--ink-secondary); }
+            .col-pct { color: var(--muted); font-size: 11.5px; }
+            .col-totreb { background: #f1f5f9; font-weight: 700; }
+            .col-pts {
+                background: var(--accent-soft);
+                color: var(--primary-deep);
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 14px;
+                font-weight: 800;
+            }
 
-            .star-badge { color: #facc15; font-size: 11px; }
-            .bench-dot { color: #64748b; font-size: 14px; }
+            .star-badge { color: #d97706; font-size: 13px; }
+            .bench-dot { color: var(--muted); }
             .cap-badge {
                 display: inline-block;
-                background: #eab308;
-                color: #000;
-                font-size: 9px;
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 10px;
                 font-weight: 800;
-                padding: 1px 4px;
-                border-radius: 3px;
-                vertical-align: middle;
+                padding: 1px 5px;
+                background: var(--gold);
+                color: var(--primary-deep);
+                border: 1px solid var(--primary-deep);
+                margin-left: 4px;
             }
+
+            .dnp-row td { color: var(--muted); background: #f8fafc; }
+            .dnp-label { font-style: italic; color: var(--muted); }
 
             .pm-pill {
                 display: inline-block;
-                padding: 1px 6px;
-                border-radius: 4px;
+                padding: 2px 7px;
                 font-weight: 700;
-                font-size: 11px;
+                font-size: 11.5px;
+                border: 1px solid transparent;
             }
-            .pm-pos { background: rgba(16, 185, 129, 0.15); color: #34d399; }
-            .pm-neg { background: rgba(244, 63, 94, 0.15); color: #fb7185; }
-            .pm-zero { color: #64748b; }
+            .pm-pos { background: var(--success-light); color: #047857; border-color: #10b981; }
+            .pm-neg { background: var(--danger-light); color: #b91c1c; border-color: #ef4444; }
+            .pm-zero { background: #f1f5f9; color: var(--muted); border-color: var(--line); }
 
-            .totals-row {
-                background: #182234 !important;
+            .totals-row td {
+                background: var(--accent) !important;
+                border-top: var(--px-border) !important;
+                border-bottom: none !important;
                 font-weight: 700;
-                border-top: 2px solid rgba(255, 255, 255, 0.15);
+                color: var(--primary-deep);
             }
-            .totals-row td { color: #fff; padding: 8px; }
 
-            .dnp-row td { color: #64748b !important; }
-            .dnp-label { font-style: italic; font-size: 11px; }
-
-            /* SUMMARY GRID */
+            /* SUMMARY CARDS (2 CỘT) */
             .summary-grid {
                 display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 16px;
-                margin-top: 16px;
-            }
-
-            .summary-card {
-                background: var(--bg-card);
-                border: 1px solid var(--border-color);
-                border-radius: 12px;
-                overflow: hidden;
-                box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+                grid-template-columns: repeat(2, 1fr);
+                gap: 20px;
             }
 
             .card-header-bar {
                 display: flex;
                 align-items: center;
-                gap: 8px;
-                padding: 10px 16px;
-                background: #151d2c;
-                border-bottom: 1px solid var(--border-color);
-                font-family: 'Barlow Condensed', sans-serif;
-                font-size: 15px;
-                font-weight: 700;
-                letter-spacing: 0.6px;
-                color: #e2e8f0;
+                gap: 9px;
+                padding: 11px 16px;
+                background: var(--primary);
+                color: #ffffff;
+                font-family: "Chakra Petch", sans-serif;
+                font-size: 13.5px;
+                font-weight: 800;
+                letter-spacing: 0.4px;
+                border-bottom: var(--px-border);
             }
 
             .summary-table {
                 width: 100%;
                 border-collapse: collapse;
-                font-size: 12px;
-                text-align: center;
+                font-size: 13px;
                 font-variant-numeric: tabular-nums;
             }
 
             .summary-table th, .summary-table td {
-                padding: 8px 12px;
-                border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+                padding: 9px 12px;
+                border-bottom: 1px solid var(--line);
+                text-align: center;
             }
 
-            .summary-table th {
-                background: #141c2b;
-                color: #94a3b8;
-                font-size: 11px;
-                text-transform: uppercase;
+            .summary-table thead th {
+                background: var(--primary-light);
+                color: var(--primary-deep);
+                font-family: "Chakra Petch", sans-serif;
+                font-weight: 700;
+                font-size: 12px;
+                border-bottom: var(--px-border);
             }
 
-            .summary-table .left { text-align: left; color: #cbd5e1; }
-            .score-sub { color: #94a3b8; font-size: 11px; font-weight: normal; }
-            .center-highlight { font-weight: 700; color: #38bdf8; }
+            .summary-table tbody tr:last-child td { border-bottom: none; }
+            .score-sub { color: var(--muted); font-size: 11.5px; font-weight: 500; }
+            .center-highlight {
+                font-family: "Chakra Petch", sans-serif;
+                font-weight: 800;
+                color: var(--primary);
+                background: var(--accent-soft);
+            }
 
-            /* PRINT STYLES */
+            /* FOOTER */
+            .page-footer {
+                margin-top: 28px;
+                padding-top: 14px;
+                border-top: 2px solid var(--primary-deep);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                flex-wrap: wrap;
+                gap: 10px;
+                font-size: 12px;
+                color: var(--muted);
+            }
+
+            /* RESPONSIVE */
+            @media (max-width: 1024px) {
+                .app-shell { flex-direction: column; }
+                .sidebar {
+                    width: 100%;
+                    height: auto;
+                    position: static;
+                    border-right: none;
+                    border-bottom: var(--px-border);
+                }
+                .nav-group { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; }
+                .nav-section-label, .sidebar-footer { display: none; }
+                .nav-link { margin-bottom: 0; padding: 7px 10px; }
+                .main-content { padding: 16px; }
+                .scoreboard-grid { grid-template-columns: 1fr; }
+                .summary-grid { grid-template-columns: 1fr; }
+            }
+
+            /* IN BIÊN BẢN PDF CHUẨN A4 */
             @media print {
-                body { background: #fff !important; color: #000 !important; font-size: 11px; padding: 0; }
-                .cam-card { display: none !important; }
-                .main-shell { max-width: 100% !important; }
-                .score-banner-card { background: #fff !important; border: 2px solid #000 !important; color: #000 !important; box-shadow: none !important; }
-                .team-full-name { color: #000 !important; }
-                .score-digit { color: #000 !important; text-shadow: none !important; }
-                .team-section { background: #fff !important; border: 1px solid #000 !important; box-shadow: none !important; }
-                .team-header-bar { background: #eee !important; border-bottom: 1px solid #000 !important; color: #000 !important; }
-                .team-header-name { color: #000 !important; }
-                .fiba-table { border: 1px solid #000 !important; font-size: 10px; }
-                .fiba-table th, .fiba-table td { border: 1px solid #333 !important; color: #000 !important; padding: 3px 4px; }
-                .fiba-table thead tr.th-group th { background: #eee !important; color: #000 !important; }
-                .fiba-table thead tr.th-sub th { background: #f5f5f5 !important; color: #000 !important; }
-                .totals-row { background: #eee !important; }
-                .totals-row td { color: #000 !important; font-weight: bold; }
-                .col-name { color: #000 !important; }
-                .col-pts { color: #000 !important; font-weight: bold; }
-                .summary-card { background: #fff !important; border: 1px solid #000 !important; box-shadow: none !important; }
-                .card-header-bar { background: #eee !important; color: #000 !important; }
-                .summary-table th, .summary-table td { border: 1px solid #333 !important; color: #000 !important; }
+                body { background: #ffffff !important; color: #000000 !important; font-size: 11px; }
+                .sidebar, .cam-card, .topbar-actions, .page-footer { display: none !important; }
+                .main-content { padding: 0 !important; max-width: 100% !important; }
+                .page-topbar { border-bottom: 2px solid #000 !important; margin-bottom: 12px !important; }
+                .btc-card, .hero-score-card {
+                    box-shadow: none !important;
+                    border: 1.5px solid #000 !important;
+                    background: #ffffff !important;
+                    color: #000000 !important;
+                    page-break-inside: avoid;
+                }
+                .team-side, .hero-tag-pill, .vs-box {
+                    background: #ffffff !important;
+                    color: #000000 !important;
+                    border-color: #000 !important;
+                    box-shadow: none !important;
+                }
+                .team-full-name, .score-digit, .lead-change-badge, .team-jersey-tag {
+                    color: #000000 !important;
+                    text-shadow: none !important;
+                }
+                .team-header-bar, .card-header-bar, .fiba-table thead tr.th-group th {
+                    background: #e5e7eb !important;
+                    color: #000000 !important;
+                }
+                .fiba-table th, .fiba-table td, .summary-table th, .summary-table td {
+                    border: 1px solid #333 !important;
+                    color: #000000 !important;
+                    padding: 4px 5px !important;
+                }
+                .totals-row td { background: #f3f4f6 !important; }
             }
         </style>
     </head>
     <body>
-        <div class="main-shell">
-            <!-- CAMERA & TRACKING VIEWER -->
-            <div class="cam-card">
-                <div class="cam-header">
-                    <div class="cam-title">
-                        <span class="pulse-dot"></span>
-                        <span>OBS STUDIO • HITBOX & BALL TRACKING</span>
+        <div class="app-shell">
+            <!-- SIDEBAR ĐIỀU HÀNH (PHONG CÁCH BTCGIAIDAU.ID.VN) -->
+            <aside class="sidebar" aria-label="Menu điều hành">
+                <div class="brand-box">
+                    <div class="brand-logo" aria-hidden="true">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                            <circle cx="12" cy="12" r="9"/>
+                            <path d="M12 3v18M3 12h18M5.6 5.6c3.8 3.2 3.8 9.6 0 12.8M18.4 5.6c-3.8 3.2-3.8 9.6 0 12.8"/>
+                        </svg>
                     </div>
-                    <div class="cam-badges">
-                        <span class="badge badge-yolo">YOLOv8 TRACKING</span>
-                        <span class="badge badge-ai">COURT ROI ACTIVE</span>
+                    <div>
+                        <div class="brand-title">BTC◈GIẢI ĐẤU</div>
+                        <div class="brand-sub">AI Bóng Rổ · OBS</div>
                     </div>
                 </div>
-                <div class="obs-feed-container" id="feedContainer" style="position: relative; user-select: none;">
-                    <img id="obsFeedImg" src="/video_feed" alt="Đang kết nối luồng OBS Studio..." style="width: 100%; display: block;" />
-                    <canvas id="courtCanvas" style="position: absolute; top:0; left:0; width:100%; height:100%; display: none; cursor: crosshair;"></canvas>
+
+                <nav class="nav-group">
+                    <div class="nav-section-label">MENU ĐIỀU HÀNH</div>
+                    <a href="#section-camera" class="nav-link active">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="1"/></svg>
+                        <span>Camera & Vạch sân</span>
+                    </a>
+                    <a href="#section-scoreboard" class="nav-link">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="4" width="20" height="16"/><path d="M12 4v16"/></svg>
+                        <span>Bảng tỷ số trực tiếp</span>
+                    </a>
+                    <a href="#section-boxscore" class="nav-link">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4"/></svg>
+                        <span>Biên bản thống kê</span>
+                    </a>
+                    <a href="#section-summary" class="nav-link">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+                        <span>Chỉ số chuyên sâu</span>
+                    </a>
+                </nav>
+
+                <div class="sidebar-footer" role="status" aria-atomic="true">
+                    <span class="status-dot"></span>
+                    <span>Đồng bộ trực tiếp mỗi 2 giây</span>
                 </div>
-                <div class="cam-footer">
-                    <div class="sync-indicator">
-                        <span class="pulse-dot"></span> Tự động đồng bộ số liệu mỗi 2s
+            </aside>
+
+            <!-- VÙNG LÀM VIỆC CHÍNH -->
+            <main class="main-content">
+                <header class="page-topbar">
+                    <div>
+                        <div class="topbar-kicker">ĐIỀU HÀNH GIẢI ĐẤU · NỀN TẢNG SỐ HÓA BÓNG RỔ AI</div>
+                        <h1 class="topbar-heading">Bảng Điểm & Biên Bản Điện Tử Trực Tiếp</h1>
                     </div>
-                    <div style="display: flex; gap: 8px;">
-                        <button id="btnCalibToggle" onclick="toggleCourtCalib()" style="background: #1e293b; color: #38bdf8; border: 1px solid #0284c7; padding: 6px 14px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px;">
-                            📐 Căn chỉnh vạch sân
+                    <div class="topbar-actions">
+                        <button class="btn-btc btn-white" onclick="toggleCourtCalib()" id="btnTopCalib">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                            <span>Căn chỉnh vạch sân</span>
                         </button>
-                        <button class="btn-print" onclick="window.print()">
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
-                            In / Xuất PDF Biên Bản FIBA
+                        <button class="btn-btc btn-primary" onclick="window.print()">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                            <span>In / Xuất PDF Biên Bản</span>
                         </button>
                     </div>
-                </div>
-                <div id="calibPanel" style="display: none; background: #0f172a; border-top: 1px solid #1e293b; padding: 12px 16px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px;">
-                        <div style="display: flex; gap: 6px;">
-                            <button id="modePolyBtn" onclick="setCalibMode('polygon')" style="background: #0284c7; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">
-                                🟢 Ranh giới sân (N-điểm)
-                            </button>
-                            <button id="modeExclBtn" onclick="setCalibMode('exclusion')" style="background: #1e293b; color: #f87171; border: 1px solid #ef4444; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">
-                                🔴 Vẽ vùng loại trừ (Ghế dự bị / Quay phim)
+                </header>
+
+                <!-- KHUNG LUỒNG CAMERA OBS & TRACKING -->
+                <section id="section-camera" class="btc-card cam-card">
+                    <div class="cam-header">
+                        <div class="cam-title">
+                            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
+                            <span>LUỒNG OBS STUDIO · NHẬN DIỆN VĐV & QUẢ BÓNG</span>
+                        </div>
+                        <div class="cam-badges">
+                            <span class="tag-pixel tag-navy">YOLOv8 TRACKING</span>
+                            <span class="tag-pixel tag-gold">COURT ROI N-ĐIỂM</span>
+                        </div>
+                    </div>
+
+                    <div class="obs-feed-container" id="feedContainer">
+                        <div class="feed-stage">
+                            <img id="obsFeedImg" src="/video_feed" alt="Luồng video trực tiếp từ OBS Studio" />
+                            <canvas id="courtCanvas" style="position: absolute; top:0; left:0; width:100%; height:100%; display: none; cursor: crosshair;"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="cam-footer">
+                        <div class="sync-indicator">
+                            <span class="status-dot"></span>
+                            <span>Tự động phân tích pha bóng & cập nhật biên bản mỗi 2 giây</span>
+                        </div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button id="btnCalibToggle" class="btn-btc btn-white btn-sm" onclick="toggleCourtCalib()">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                                <span>Căn chỉnh vạch sân</span>
                             </button>
                         </div>
-                        <span id="calibStatus" style="font-size: 12px; color: #4ade80;"></span>
                     </div>
-                    <div id="calibHint" style="font-size: 12px; color: #94a3b8; margin-bottom: 10px;">
-                        • Kéo chốt để chỉnh góc (tự động hút sát mép khung hình khi vạch sân tràn) • <b>Double-click</b> để thêm góc mới • <b>Chuột phải</b> vào chốt để xóa góc.
+
+                    <!-- BẢNG CĂN CHỈNH VẠCH SÂN & VÙNG LOẠI TRỪ -->
+                    <div id="calibPanel" class="calib-panel">
+                        <div class="calib-row">
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                <button id="modePolyBtn" class="btn-btc btn-primary btn-sm" onclick="setCalibMode('polygon')">
+                                    Ranh giới sân (N-điểm)
+                                </button>
+                                <button id="modeExclBtn" class="btn-btc btn-danger-outline btn-sm" onclick="setCalibMode('exclusion')">
+                                    Vẽ vùng loại trừ (Ghế dự bị / Quay phim)
+                                </button>
+                            </div>
+                            <span id="calibStatus" style="font-size: 12.5px; font-weight: 700; color: #047857;"></span>
+                        </div>
+
+                        <div id="calibHint" class="calib-hint">
+                            • Kéo chốt góc để bám sát vạch biên (tự động hút dính mép khung hình khi vạch sân tràn) • <b>Nhấp đúp (Double-click)</b> lên cạnh để thêm góc mới • <b>Chuột phải</b> vào chốt để xóa góc.
+                        </div>
+
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                            <button class="btn-btc btn-gold btn-sm" onclick="saveCourtConfig()">Lưu cấu hình sân</button>
+                            <button class="btn-btc btn-white btn-sm" onclick="setCourtPreset('3x3')">Mẫu 3x3 (5 góc ôm đáy)</button>
+                            <button class="btn-btc btn-white btn-sm" onclick="setCourtPreset('full')">Toàn màn hình (4 góc)</button>
+                            <button class="btn-btc btn-danger-outline btn-sm" onclick="clearExclusionZones()">Xóa hết vùng đỏ</button>
+                            <button class="btn-btc btn-white btn-sm" onclick="toggleCourtCalib()" style="margin-left: auto;">Đóng</button>
+                        </div>
                     </div>
-                    <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
-                        <button onclick="saveCourtConfig()" style="background: #10b981; color: white; border: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;">💾 Lưu cấu hình</button>
-                        <button onclick="setCourtPreset('3x3')" style="background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">Mẫu 3x3 (5 góc ôm đáy)</button>
-                        <button onclick="setCourtPreset('full')" style="background: #334155; color: #e2e8f0; border: none; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">Toàn màn hình (4 góc)</button>
-                        <button onclick="clearExclusionZones()" style="background: #450a0a; color: #fca5a5; border: 1px solid #991b1b; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">🗑️ Xóa hết vùng đỏ</button>
-                        <button onclick="toggleCourtCalib()" style="background: transparent; color: #94a3b8; border: 1px solid #475569; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-left: auto;">✕ Đóng</button>
+                </section>
+
+                <!-- BẢNG TỶ SỐ & BIÊN BẢN THỐNG KÊ TỰ ĐỘNG CẬP NHẬT -->
+                <div id="boxscore-container">
+                    <div class="btc-card" style="padding: 28px; text-align: center; font-weight: 600; color: var(--muted);">
+                        Đang đồng bộ dữ liệu bảng điểm trực tiếp từ hệ thống OBS AI...
                     </div>
                 </div>
-            </div>
 
-            <!-- LIVE FIBA BOX SCORE CONTAINER -->
-            <div id="boxscore-container">Đang tải dữ liệu trực tiếp từ OBS...</div>
+                <footer class="page-footer">
+                    <span><b>BTC◈GIẢI ĐẤU</b> · Hệ thống số hóa & thống kê bóng rổ tự động chuẩn FIBA</span>
+                    <span>Phong cách giao diện đồng bộ theo btcgiaidau.id.vn</span>
+                </footer>
+            </main>
         </div>
 
         <script>
             function refreshBoxScore() {
                 fetch('/boxscore_data').then(r => r.text()).then(html => {
-                    document.getElementById('boxscore-container').innerHTML = html;
-                }).catch(err => console.error("Lỗi cập nhật box score:", err));
+                    if (html) document.getElementById('boxscore-container').innerHTML = html;
+                }).catch(err => console.error("Lỗi cập nhật bảng điểm:", err));
             }
             setInterval(refreshBoxScore, 2000);
             refreshBoxScore();
+
+            // Active state cho menu sidebar
+            document.querySelectorAll('.nav-link').forEach(link => {
+                link.addEventListener('click', () => {
+                    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+                    link.classList.add('active');
+                });
+            });
 
             // QUẢN LÝ CĂN CHỈNH VẠCH SÂN (N-ĐIỂM + EDGE SNAP) & VÙNG LOẠI TRỪ (EXCLUSION ZONES)
             let calibActive = false;
@@ -1552,7 +1969,7 @@ def index():
             ];
             let exclusionZones = []; // [[x1, y1, x2, y2], ...]
             let activeDragIdx = -1;
-            let drawingExcl = null;  // {x1, y1, x2, y2}
+            let drawingExcl = null;
 
             function snapToEdge(val) {
                 const snapThreshold = 0.025;
@@ -1567,12 +1984,12 @@ def index():
                 const eBtn = document.getElementById('modeExclBtn');
                 const hint = document.getElementById('calibHint');
                 if (mode === 'polygon') {
-                    pBtn.style.background = '#0284c7'; pBtn.style.color = '#fff'; pBtn.style.border = 'none';
-                    eBtn.style.background = '#1e293b'; eBtn.style.color = '#f87171'; eBtn.style.border = '1px solid #ef4444';
-                    hint.innerHTML = '• Kéo chốt để chỉnh góc (tự động hút sát mép khung hình khi vạch sân tràn) • <b>Double-click</b> để thêm góc mới • <b>Chuột phải</b> vào chốt để xóa góc.';
+                    pBtn.className = 'btn-btc btn-primary btn-sm';
+                    eBtn.className = 'btn-btc btn-danger-outline btn-sm';
+                    hint.innerHTML = '• Kéo chốt góc để bám sát vạch biên (tự động hút dính mép khung hình khi vạch sân tràn) • <b>Nhấp đúp (Double-click)</b> lên cạnh để thêm góc mới • <b>Chuột phải</b> vào chốt để xóa góc.';
                 } else {
-                    eBtn.style.background = '#dc2626'; eBtn.style.color = '#fff'; eBtn.style.border = 'none';
-                    pBtn.style.background = '#1e293b'; pBtn.style.color = '#38bdf8'; pBtn.style.border = '1px solid #0284c7';
+                    eBtn.className = 'btn-btc btn-danger btn-sm';
+                    pBtn.className = 'btn-btc btn-white btn-sm';
                     hint.innerHTML = '• <b>Nhấn giữ và kéo chuột</b> trên video để khoanh vùng đỏ loại trừ (ghế dự bị, quay phim, khán giả) • <b>Chuột phải</b> vào ô đỏ để xóa.';
                 }
                 drawCalibCanvas();
@@ -1598,15 +2015,14 @@ def index():
                 if (calibActive) {
                     canvas.style.display = 'block';
                     panel.style.display = 'block';
-                    btn.style.background = '#0284c7';
-                    btn.style.color = '#ffffff';
+                    btn.className = 'btn-btc btn-gold btn-sm';
                     fetchCourtConfig();
                     initCanvasEvents();
+                    document.getElementById('section-camera').scrollIntoView({ behavior: 'smooth', block: 'start' });
                 } else {
                     canvas.style.display = 'none';
                     panel.style.display = 'none';
-                    btn.style.background = '#1e293b';
-                    btn.style.color = '#38bdf8';
+                    btn.className = 'btn-btc btn-white btn-sm';
                 }
             }
 
@@ -1619,7 +2035,6 @@ def index():
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-                // 1. Vẽ đa giác ranh giới sân (N-điểm)
                 if (courtPoints.length >= 3) {
                     ctx.beginPath();
                     courtPoints.forEach((p, i) => {
@@ -1629,33 +2044,31 @@ def index():
                         else ctx.lineTo(x, y);
                     });
                     ctx.closePath();
-                    ctx.fillStyle = 'rgba(2, 132, 199, 0.16)';
+                    ctx.fillStyle = 'rgba(244, 211, 94, 0.16)';
                     ctx.fill();
-                    ctx.strokeStyle = '#00e5ff';
-                    ctx.lineWidth = 2;
+                    ctx.strokeStyle = '#f4d35e';
+                    ctx.lineWidth = 2.5;
                     ctx.stroke();
 
-                    // Vẽ các chốt góc P1..PN
                     courtPoints.forEach((p, i) => {
                         const x = p[0] * canvas.width;
                         const y = p[1] * canvas.height;
                         ctx.beginPath();
                         ctx.arc(x, y, calibMode === 'polygon' ? 8 : 5, 0, Math.PI * 2);
-                        ctx.fillStyle = (p[0] === 0 || p[0] === 1 || p[1] === 0 || p[1] === 1) ? '#22c55e' : '#0ea5e9';
+                        ctx.fillStyle = (p[0] === 0 || p[0] === 1 || p[1] === 0 || p[1] === 1) ? '#10b981' : '#0d3b66';
                         ctx.fill();
-                        ctx.strokeStyle = '#ffffff';
+                        ctx.strokeStyle = '#f4d35e';
                         ctx.lineWidth = 2;
                         ctx.stroke();
 
                         ctx.fillStyle = '#ffffff';
-                        ctx.font = 'bold 11px sans-serif';
+                        ctx.font = 'bold 11px "Chakra Petch", sans-serif';
                         const lx = x > canvas.width - 35 ? x - 26 : x + 10;
                         const ly = y < 18 ? y + 16 : y - 6;
                         ctx.fillText('P' + (i + 1), lx, ly);
                     });
                 }
 
-                // 2. Vẽ các vùng loại trừ (Exclusion Zones) màu đỏ
                 const allExcl = [...exclusionZones];
                 if (drawingExcl) {
                     allExcl.push([
@@ -1670,18 +2083,17 @@ def index():
                     const y = z[1] * canvas.height;
                     const w = (z[2] - z[0]) * canvas.width;
                     const h = (z[3] - z[1]) * canvas.height;
-                    ctx.fillStyle = 'rgba(239, 68, 68, 0.30)';
+                    ctx.fillStyle = 'rgba(230, 57, 70, 0.30)';
                     ctx.fillRect(x, y, w, h);
-                    ctx.strokeStyle = '#ef4444';
+                    ctx.strokeStyle = '#e63946';
                     ctx.lineWidth = 2;
                     ctx.strokeRect(x, y, w, h);
-                    ctx.fillStyle = '#fecaca';
-                    ctx.font = 'bold 11px sans-serif';
-                    ctx.fillText('NO-TRACK #' + (idx + 1), x + 5, y + 14);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.font = 'bold 11px "Chakra Petch", sans-serif';
+                    ctx.fillText('LOẠI TRỪ #' + (idx + 1), x + 5, y + 14);
                 });
             }
 
-            // Tìm cạnh gần nhất để chèn thêm điểm mới khi double-click
             function insertPointOnNearestEdge(mx, my) {
                 let bestIdx = courtPoints.length;
                 let minDist = Infinity;
@@ -1729,7 +2141,6 @@ def index():
                             saveCourtConfig();
                         }
                     } else {
-                        // Xóa vùng loại trừ dưới con trỏ chuột phải
                         for (let i = exclusionZones.length - 1; i >= 0; i--) {
                             const z = exclusionZones[i];
                             if (mx >= z[0] && mx <= z[2] && my >= z[1] && my <= z[3]) {
@@ -1816,7 +2227,7 @@ def index():
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({polygon: courtPoints, exclusion_zones: exclusionZones})
                 }).then(r => r.json()).then(data => {
-                    status.innerText = '✓ Đã lưu (' + courtPoints.length + ' góc, ' + exclusionZones.length + ' vùng đỏ)';
+                    status.innerText = 'Đã lưu (' + courtPoints.length + ' góc sân, ' + exclusionZones.length + ' vùng loại trừ)';
                     setTimeout(() => { if (status) status.innerText = ''; }, 3000);
                 }).catch(e => {
                     status.innerText = 'Lỗi lưu: ' + e;
@@ -2023,4 +2434,4 @@ if __name__ == "__main__":
     print(f"[Hệ thống] Đang tự động mở trình duyệt tại: {local_url}")
     threading.Timer(1.5, webbrowser.open, args=[local_url]).start()
 
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
